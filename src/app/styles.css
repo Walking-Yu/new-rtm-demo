@@ -1,0 +1,391 @@
+/**
+ * 实验室外壳样式。
+ *
+ * 布局数值来自 spec「实验室外壳布局」，均为用户两轮确认过的具体值，**不要回退**：
+ * 主区与时间线 1fr / 400px、折叠态 1fr / 40px、1240px 及以下退化为单列。
+ *
+ * 两级 tab 用原生横向滚动 + 隐藏滚动条。**刻意不加**参考 UI 上的左右箭头，
+ * 也不加键盘导航 —— 参考 UI 在这一点上不照抄。
+ *
+ * 配色沿用 09 号布局原型确认下来的一套，前缀由 `pt-` 改为 `lab-`。
+ */
+
+:root {
+  --lab-ink: #17191d;
+  --lab-muted: #69717d;
+  --lab-soft: #8c939e;
+  --lab-line: #e0e4e8;
+  --lab-surface: #ffffff;
+  --lab-surface-soft: #f7f8f9;
+  --lab-indigo: #3856c8;
+  --lab-indigo-soft: #edf0ff;
+  --lab-green: #137a53;
+  --lab-green-soft: #e7f5ed;
+  --lab-amber: #a8660b;
+  --lab-amber-soft: #fff3dc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f2f4f6;
+  color: var(--lab-ink);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--lab-indigo);
+}
+
+/* ── 第一层：一级 tab 条 ───────────────────────── */
+.lab-topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 56px;
+  padding: 0 20px;
+  background: var(--lab-surface);
+  border-bottom: 1px solid var(--lab-line);
+}
+
+.lab-logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lab-logo__mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, var(--lab-indigo), #6f86e0);
+}
+
+.lab-topbar__aside {
+  flex-shrink: 0;
+  color: var(--lab-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ── 两级 tab 共用：原生横向滚动 + 隐藏滚动条 ──── */
+.lab-tabs {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  /* Firefox */
+  scrollbar-width: none;
+  /* 旧版 Edge / IE */
+  -ms-overflow-style: none;
+}
+
+.lab-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.lab-tab {
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.lab-tabs--primary {
+  gap: 2px;
+  flex: 1;
+}
+
+.lab-tab--primary {
+  padding: 8px 13px;
+  border-radius: 7px;
+  color: var(--lab-muted);
+  font-size: 13px;
+}
+
+.lab-tab--primary:hover {
+  background: var(--lab-surface-soft);
+  color: var(--lab-ink);
+}
+
+.lab-tab--primary[data-active='true'] {
+  background: var(--lab-ink);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ── 第二层：二级 tab 条（药丸形）───────────────── */
+.lab-tabs--secondary {
+  gap: 8px;
+  padding: 12px 20px;
+  background: var(--lab-surface);
+  border-bottom: 1px solid var(--lab-line);
+}
+
+.lab-tab--secondary {
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--lab-muted);
+  font-size: 13px;
+}
+
+.lab-tab--secondary:hover {
+  background: var(--lab-surface-soft);
+  color: var(--lab-ink);
+}
+
+.lab-tab--secondary[data-active='true'] {
+  background: var(--lab-indigo-soft);
+  border-color: #c9d3f7;
+  color: var(--lab-indigo);
+  font-weight: 600;
+}
+
+/* 已规划场景只加一个文字标记。刻意不灰置、不 disabled —— 灰置会让客户以为坏了。 */
+.lab-tab__flag {
+  margin-left: 7px;
+  color: var(--lab-soft);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* ── 第三层：主体（主区 + 时间线面板）──────────── */
+.lab-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: 16px;
+  align-items: start;
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 16px 20px 32px;
+}
+
+/* 折叠态：右栏收成一条 40px 竖条（交互属票 20，这里先备好布局）。 */
+.lab-body[data-timeline='collapsed'] {
+  grid-template-columns: minmax(0, 1fr) 40px;
+}
+
+/* 1240px 及以下：退化为单列，时间线从右侧栏变为主区下方的横排区块。 */
+@media (max-width: 1240px) {
+  .lab-body,
+  .lab-body[data-timeline='collapsed'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /*
+   * 「横排区块」不只是堆到下面：条目改为横向流动 + 横向滚动，
+   * 高度收在一个不抢走主区空间的带状区域内（票 15 的窄屏要求）。
+   */
+  .lab-timeline {
+    display: flex;
+    align-items: stretch;
+    max-height: 220px;
+  }
+
+  .lab-timeline__header {
+    flex: 0 0 auto;
+    border-bottom: none;
+    border-right: 1px solid var(--lab-line);
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+  }
+
+  .lab-timeline__body {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+}
+
+.lab-main {
+  min-width: 0;
+}
+
+.lab-timeline {
+  background: var(--lab-surface);
+  border: 1px solid var(--lab-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.lab-timeline__header {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--lab-line);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lab-timeline__empty {
+  margin: 0;
+  padding: 20px 14px;
+  color: var(--lab-soft);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* ── 第四层：底部预留区（本票不实现内容）───────── */
+.lab-bottom {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* ── 主区内容块：场景占位与未找到 ──────────────── */
+.lab-placeholder,
+.lab-scene-stub {
+  background: var(--lab-surface);
+  border: 1px solid var(--lab-line);
+  border-radius: 10px;
+  padding: 56px 24px;
+  text-align: center;
+}
+
+.lab-placeholder__badge,
+.lab-scene-stub__badge {
+  display: inline-block;
+  margin: 0 0 14px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--lab-amber-soft);
+  color: var(--lab-amber);
+  font-size: 11px;
+}
+
+.lab-scene-stub__badge {
+  background: var(--lab-green-soft);
+  color: var(--lab-green);
+}
+
+.lab-placeholder__title,
+.lab-scene-stub__title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.lab-placeholder__summary {
+  margin: 0 auto 18px;
+  max-width: 560px;
+  color: var(--lab-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.lab-placeholder__note,
+.lab-placeholder__cta,
+.lab-scene-stub p {
+  margin: 0 auto;
+  max-width: 560px;
+  color: var(--lab-soft);
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.lab-placeholder__cta {
+  margin-top: 10px;
+}
+
+/* ── env 引导页 ───────────────────────────────── */
+.lab-guide {
+  max-width: 720px;
+  margin: 64px auto;
+  padding: 32px;
+  background: var(--lab-surface);
+  border: 1px solid var(--lab-line);
+  border-radius: 12px;
+}
+
+.lab-guide__title {
+  margin: 0 0 10px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.lab-guide__lead {
+  margin: 0 0 24px;
+  color: var(--lab-muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.lab-guide__section {
+  margin: 0 0 22px;
+}
+
+.lab-guide__section p {
+  margin: 0 0 8px;
+  color: var(--lab-muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.lab-guide__subtitle {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lab-guide__code {
+  margin: 0;
+  padding: 13px 15px;
+  background: var(--lab-surface-soft);
+  border: 1px solid var(--lab-line);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 一级 tab 的完整名 / 窄屏短名切换 ─────────── */
+/* 两份都渲染在 DOM 里，靠断点决定显示哪个。可访问名由 aria-label 固定为完整名。 */
+.lab-tab__short {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .lab-tab__full {
+    display: none;
+  }
+
+  .lab-tab__short {
+    display: inline;
+  }
+}
+
+/* ── 占位页的能力标签 ─────────────────────────── */
+.lab-placeholder__caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.lab-placeholder__cap {
+  padding: 3px 9px;
+  border: 1px solid var(--lab-line);
+  border-radius: 999px;
+  background: var(--lab-surface-soft);
+  color: var(--lab-muted);
+  font-size: 12px;
+}
+
+.lab-placeholder__caps-label {
+  margin: 0 0 8px;
+  color: var(--lab-soft);
+  font-size: 12px;
+}

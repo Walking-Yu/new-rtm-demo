@@ -223,6 +223,95 @@ a {
   border-bottom: 1px solid var(--lab-line);
   font-size: 13px;
   font-weight: 600;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.lab-timeline__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 图例：一眼分辨主动调用与被动接收，色点样式与条目里的完全一致。 */
+.lab-timeline__legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--lab-soft);
+}
+
+.lab-timeline__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* 操作按钮推到右侧。 */
+.lab-timeline__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.lab-timeline__action {
+  padding: 3px 9px;
+  border: 1px solid var(--lab-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lab-soft);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.lab-timeline__action:hover {
+  color: var(--lab-ink);
+  border-color: var(--lab-soft);
+}
+
+/* ── 三维筛选器 ─────────────────────────────────── */
+.lab-timeline__filters {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--lab-line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lab-timeline__filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.lab-timeline__filter-label {
+  flex: 0 0 34px;
+  color: var(--lab-soft);
+  font-size: 11px;
+}
+
+.lab-timeline__filter {
+  padding: 2px 8px;
+  border: 1px solid var(--lab-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lab-soft);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* 选中态。再点一次即取消，所以不需要单独的「全部」按钮。 */
+.lab-timeline__filter[data-active='true'] {
+  background: var(--lab-indigo-soft);
+  border-color: var(--lab-indigo);
+  color: var(--lab-indigo);
 }
 
 .lab-timeline__empty {
@@ -231,6 +320,131 @@ a {
   color: var(--lab-soft);
   font-size: 12px;
   line-height: 1.7;
+}
+
+/* ── 时间线条目 ─────────────────────────────────── */
+.lab-timeline__list {
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+}
+
+/*
+ * 行布局是 spec 定下的三列网格：色点轨道 16px、时间 62px、正文自适应。
+ * **不要改这三个数值** —— 时间列宽刚好容下 `MM:SS.mmm`，窄一点会换行。
+ */
+.lab-trace {
+  display: grid;
+  grid-template-columns: 16px 62px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0 4px;
+  padding: 4px 14px;
+  font-size: 12px;
+}
+
+/* api 与 event 靠左侧色点区分：实心圆 vs 空心圈。 */
+.lab-trace__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  align-self: center;
+}
+
+.lab-trace__dot[data-kind='api'] {
+  background: var(--lab-indigo);
+}
+
+.lab-trace__dot[data-kind='event'] {
+  background: transparent;
+  border: 1.5px solid var(--lab-green);
+}
+
+.lab-trace__time {
+  color: var(--lab-soft);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.lab-trace__body {
+  min-width: 0;
+}
+
+.lab-trace__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+/* uid badge。配色来自 roleColors.ts，与主区身份条同源。 */
+.lab-uid-badge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.lab-trace__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.lab-trace__duration {
+  color: var(--lab-soft);
+  font-size: 10px;
+}
+
+.lab-trace__summary,
+.lab-trace__error {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.lab-trace__summary {
+  color: var(--lab-soft);
+}
+
+.lab-trace__error {
+  color: #b3261e;
+}
+
+.lab-trace__error code {
+  margin-right: 5px;
+  font-size: 10px;
+}
+
+/* ── 折叠态：右栏收成一条 40px 竖条 ─────────────── */
+.lab-timeline--collapsed {
+  height: 100%;
+}
+
+.lab-timeline__collapse {
+  width: 100%;
+  height: 100%;
+  min-height: 180px;
+  padding: 12px 0;
+  border: none;
+  background: transparent;
+  color: var(--lab-soft);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 竖排文字，40px 宽度里放得下。 */
+.lab-timeline__collapse-text {
+  writing-mode: vertical-rl;
+}
+
+.lab-timeline__count {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
 }
 
 /* ── 第四层：底部预留区（本票不实现内容）───────── */
@@ -388,4 +602,577 @@ a {
   margin: 0 0 8px;
   color: var(--lab-soft);
   font-size: 12px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * 语聊房场景（票 22）
+ *
+ * 布局数值全部来自 spec「语聊房主区布局」，**已经用户两轮修改确认，不要凭感觉调**：
+ *   - 手机高度 = min(812px, 视口高度 - 210px)
+ *   - 手机内只有公屏区域滚动，其余区块钉住不收缩
+ *   - 底部操作条常驻手机框内，不随公屏滚动
+ *   - 麦位方框最小高度 76px、头像 26px、4 列网格
+ * ═══════════════════════════════════════════════════════════════ */
+
+.vr-scene {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vr-warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* 耳机告警与生产边界告警。两条都是 spec 要求必须渲染的。 */
+.vr-headphones-warning,
+.vr-boundary-warning {
+  display: flex;
+  flex: 1 1 320px;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 9px 12px;
+  border: 1px solid var(--lab-line);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.vr-headphones-warning {
+  border-color: #f0d69a;
+  background: var(--lab-amber-soft);
+  color: var(--lab-amber);
+}
+
+.vr-boundary-warning {
+  background: var(--lab-surface-soft);
+  color: var(--lab-muted);
+}
+
+.vr-headphones-warning strong,
+.vr-boundary-warning strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--lab-ink);
+}
+
+/* ── 两台手机并排 ─────────────────────────────── */
+
+.vr-phones {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.vr-column {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+/* 身份条：彩色 uid badge + 视角说明。badge 配色与时间线同源（roleColors.ts）。 */
+.vr-identity {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+}
+
+.vr-identity-caption {
+  overflow: hidden;
+  color: var(--lab-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 手机外框。
+ *
+ * **高度是 spec 定的计算式，不要改成固定值或百分比。** `min()` 的两项各有职责：
+ * 812px 是手机的自然高度上限，`100vh - 210px` 让外壳的两级 tab 与告警条有位置，
+ * 保证手机在小屏上不被裁切。
+ */
+.vr-phone {
+  display: flex;
+  flex-direction: column;
+  height: min(812px, calc(100vh - 210px));
+  overflow: hidden;
+  border: 1px solid var(--lab-line);
+  border-radius: 18px;
+  background: var(--lab-surface);
+  box-shadow: 0 1px 3px rgb(23 25 29 / 6%);
+}
+
+/* 状态栏（区块一） */
+.vr-status-bar {
+  display: flex;
+  flex: none;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 14px 5px;
+  border-bottom: 1px solid var(--lab-line);
+  color: var(--lab-muted);
+  font-size: 11px;
+}
+
+.vr-status-time {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.vr-link-state {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.vr-link-state[data-state='connected'] { color: var(--lab-green); }
+.vr-link-state[data-state='connecting'],
+.vr-link-state[data-state='reconnecting'] { color: var(--lab-amber); }
+.vr-link-state[data-state='failed'] { color: #b3261e; }
+
+/* 房间头部（区块二） */
+.vr-room-header {
+  flex: none;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--lab-line);
+}
+
+.vr-room-title {
+  margin: 0 0 5px;
+  overflow: hidden;
+  font-size: 14px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.vr-room-header p {
+  margin: 0 0 6px;
+  overflow: hidden;
+  color: var(--lab-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.vr-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.vr-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--lab-line);
+  border-radius: 999px;
+  background: var(--lab-surface-soft);
+  color: var(--lab-muted);
+  font-size: 11px;
+}
+
+/* 手机内的通用区块。`flex: none` 是「其余区块钉住不收缩」的落点。 */
+.vr-block {
+  flex: none;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--lab-line);
+}
+
+.vr-block__title {
+  margin: 0 0 7px;
+  color: var(--lab-soft);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/*
+ * 麦位网格（区块三）。
+ * **4 列、方框最小高 76px、头像 26px 都是 spec 定的，不要调。**
+ */
+.vr-seats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.vr-seat {
+  position: relative;
+  min-height: 76px;
+}
+
+.vr-seat__select {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 76px;
+  padding: 5px 3px;
+  border: 1px solid var(--lab-line);
+  border-radius: 10px;
+  background: var(--lab-surface-soft);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.vr-seat__select:disabled {
+  cursor: default;
+}
+
+.vr-seat[data-selected='true'] .vr-seat__select {
+  border-color: var(--lab-indigo);
+  background: var(--lab-indigo-soft);
+}
+
+.vr-seat[data-speaking='true'] .vr-seat__select {
+  border-color: var(--lab-green);
+  box-shadow: 0 0 0 2px var(--lab-green-soft);
+}
+
+.vr-seat__avatar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--lab-surface);
+  color: var(--lab-muted);
+  font-size: 11px;
+}
+
+.vr-seat__select strong {
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 500;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.vr-seat__status {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  color: var(--lab-soft);
+  font-size: 10px;
+}
+
+.vr-seat__status[data-status='active'] { color: var(--lab-green); }
+.vr-seat__status[data-status='joining'] { color: var(--lab-amber); }
+
+/* 麦位上的治理按钮。悬停才显形，避免 4 列网格里挤满图标。 */
+.vr-seat__governance {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: flex;
+  gap: 2px;
+}
+
+.vr-seat__governance button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--lab-line);
+  border-radius: 5px;
+  background: var(--lab-surface);
+  color: var(--lab-muted);
+  cursor: pointer;
+}
+
+/*
+ * 角色专属面板（区块四）
+ *
+ * **刻意不给它自己的滚动条。** spec 定的是「手机内只有公屏滚动，其余区块钉住」——
+ * 这里再开一个 `overflow-y: auto` 就变成两处可滚，违反那条约束。而且本场景
+ * `MAX_CLIENTS = 2`，只有一名听众，待审批申请最多一条，本就滚不起来。
+ */
+.vr-role-panel .vr-request-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.vr-request {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border: 1px solid var(--lab-line);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.vr-request span {
+  margin-left: 5px;
+  color: var(--lab-soft);
+  font-size: 11px;
+}
+
+.vr-request__actions {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+.vr-invitation {
+  margin-bottom: 7px;
+  padding: 7px 9px;
+  border: 1px solid var(--lab-line);
+  border-radius: 8px;
+  background: var(--lab-indigo-soft);
+  font-size: 12px;
+}
+
+.vr-invitation p {
+  margin: 0 0 6px;
+}
+
+.vr-invitation div {
+  display: flex;
+  gap: 6px;
+}
+
+/* 成员条（区块五）：横向滚动，超出显示计数。 */
+.vr-member-bar {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  align-items: center;
+  padding: 7px 14px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--lab-line);
+  scrollbar-width: none;
+}
+
+.vr-member-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.vr-member {
+  flex: none;
+  max-width: 96px;
+  padding: 2px 8px;
+  overflow: hidden;
+  border: 1px solid var(--lab-line);
+  border-radius: 999px;
+  background: var(--lab-surface-soft);
+  color: var(--lab-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.vr-member--overflow {
+  border-style: dashed;
+  color: var(--lab-soft);
+}
+
+/*
+ * 公屏（区块六）。
+ *
+ * **手机内唯一滚动的区域。** `flex: 1 1 auto` + `min-height: 0` 两者缺一不可：
+ * 没有 `min-height: 0` 时 flex 子项的最小高度是内容高度，公屏会把手机撑破，
+ * 于是变成整台手机滚动 —— 那正是 spec 不要的效果。
+ */
+.vr-chat {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 0;
+  padding: 9px 14px;
+  overflow-y: auto;
+}
+
+.vr-chat-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.vr-chat-line strong {
+  margin-right: 5px;
+  color: var(--lab-muted);
+  font-weight: 600;
+}
+
+.vr-chat-line strong[data-host='true'] {
+  color: var(--lab-indigo);
+}
+
+.vr-chat-line[data-type='gift'] span {
+  color: var(--lab-amber);
+}
+
+.vr-empty-copy {
+  margin: 0;
+  color: var(--lab-soft);
+  font-size: 12px;
+}
+
+/*
+ * 底部操作条（区块七）。
+ * **常驻手机框内**，不随公屏滚动 —— 靠 `flex: none` 与公屏的 `min-height: 0` 共同保证。
+ */
+.vr-action-bar {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--lab-line);
+  background: var(--lab-surface-soft);
+}
+
+.vr-action-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.vr-chat-composer {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.vr-chat-composer input,
+.vr-announcement-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--lab-line);
+  border-radius: 8px;
+  background: var(--lab-surface);
+  font: inherit;
+  font-size: 12px;
+}
+
+.vr-announcement-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--lab-muted);
+}
+
+.vr-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.vr-quick-actions button {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid var(--lab-line);
+  border-radius: 999px;
+  background: var(--lab-surface);
+  color: var(--lab-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vr-governance-tray {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.vr-governance-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* 通用按钮 */
+.vr-button,
+.vr-icon-button {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border: 1px solid var(--lab-line);
+  border-radius: 8px;
+  background: var(--lab-surface);
+  color: var(--lab-ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vr-button--wide {
+  width: 100%;
+}
+
+.vr-button:disabled,
+.vr-icon-button:disabled,
+.vr-quick-actions button:disabled,
+.vr-chat-composer button:disabled,
+.vr-announcement-form button:disabled {
+  color: var(--lab-soft);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.vr-icon-button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
+.vr-icon-button--approve {
+  border-color: var(--lab-green);
+  color: var(--lab-green);
+}
+
+.vr-icon-button--reject,
+.vr-danger {
+  border-color: #e6b4b0;
+  color: #b3261e;
+}
+
+/* 失败路径的可见反馈：麦位回滚等错误必须让用户看到。 */
+.vr-error,
+.vr-exit {
+  flex: none;
+  margin: 0;
+  padding: 6px 14px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.vr-error {
+  background: #fdecea;
+  color: #b3261e;
+}
+
+.vr-exit {
+  background: var(--lab-surface-soft);
+  color: var(--lab-muted);
+}
+
+/* 窄屏：两台手机改上下排列，避免横向挤压到看不清。 */
+@media (max-width: 1240px) {
+  .vr-phones {
+    flex-direction: column;
+  }
 }

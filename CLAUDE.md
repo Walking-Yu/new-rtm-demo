@@ -10,14 +10,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 保持英文的只有代码本身：标识符、类型名、代码注释，以及文档中引用的文件路径、命令、API 名、SDK 错误码等字面量。面向用户的 UI 文案和错误提示用中文。
 
-## 仓库结构：两套独立代码
+## 仓库结构：只有一套代码
 
-本仓库包含**两个互不依赖的应用**，改动前先确认在动哪一个。
+本仓库现在只有**一个应用** —— 根目录 `src/` 下的 RTM 场景实验室（8 个一级分类、23 个二级场景，唯一已实现的是语聊房）。单入口 `index.html`，单份 `package.json` / `vite.config.ts` / `playwright.config.ts`。
 
-- `demos/voice-room/` —— **当前主线**：可独立复制交付给客户的语聊房 SPA，基于 `agora-rtm@2.3.0-beta.0` + `agora-rtc-sdk-ng`。它有自己的 `package.json`、`node_modules`、`vite.config.ts`、`playwright.config.ts`、`tsconfig*.json`、`start-demo.sh` 和 `README.md`。它**绝不能 import 根目录的 `src/`**——这种独立性是产品要求，因为它会被单独拷出仓库交付。
-- `src/`（根目录）—— **遗留**的 24 场景 RTM 实验室（`src/domain/scenarioCatalog.ts`、`src/runtime/simulation.ts`、`src/runtime/rtm/realScenarioRuntime.ts`）。仅保留做维护验证，已从默认导航、路由和默认 dev/build 命令中摘除。
+历史上共存过的另两套代码**已搬出本仓库**，落在同级目录 `../new-rtm-demo-legacy/`：
 
-根目录 `package.json` 的主要脚本通过 `npm --prefix` 委托给 `demos/voice-room`。根目录 `start-demo.sh` 只是一行 `exec`，转发到 `demos/voice-room/start-demo.sh`。
+- `demos/voice-room/` —— 独立可拷走的语聊房 SPA（自带设置页，需手填凭证）。它与 `src/scenes/voice-room/` 是两套实现同一功能，属历史遗留。
+- `src/legacy/` + `legacy.html` + `e2e/scenarios.spec.ts` —— 早期的 24 场景实验室。
+
+搬迁后本仓库不再有 `demos/`、`src/legacy/`、`legacy.html`，也没有 `dev:legacy` / `test:legacy` / `build:legacy` / `dev:voice-room` 这些脚本。`tests/startDemoScript.test.ts` 有一组**反向断言**守着这件事（断言这些脚本名与文件都不存在），日后谁把委托脚本加回来会立刻变红。要找那两套代码的历史实现，去归档仓库读，不要在本仓库重建。
 
 ## 常用命令
 
@@ -27,65 +29,97 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./start-demo.sh              # 缺依赖时先安装，启动 http://127.0.0.1:8080/ 并打开浏览器
 ./start-demo.sh --no-open    # 只启动服务
 ./start-demo.sh --check      # 校验 Node >= 20 并打印实际解析到的 SDK 版本
-npm run dev                  # -> demos/voice-room 开发服务器（端口 8080）
-npm run build                # -> demos/voice-room 的 tsc -b && vite build
-npm test                     # 同时跑根目录 vitest 和 demos/voice-room vitest
-npm run test:e2e             # -> demos/voice-room 的 playwright（无头）
+npm run dev                  # 开发服务器（端口 8080）
+npm run build                # tsc -b && vite build，单入口
+npm test                     # vitest（19 文件 / 372 项）
+npm run test:e2e             # playwright（无头）
+npm run test:e2e:lab         # 只跑 e2e/lab.spec.ts
 ```
 
-只针对遗留实验室：`npm run dev:legacy`（端口 8081）、`npm run test:legacy`、`npm run build:legacy`。
-
-跑单个测试或聚焦某个用例（语聊房需要先 `cd demos/voice-room`）：
+跑单个测试或聚焦某个用例：
 
 ```bash
-npx vitest run src/runtime/VoiceRoomClient.test.ts
+npx vitest run src/scenes/voice-room/rtm-host.test.ts
 npx vitest run -t "approves a seat request"
-npx playwright test --project=desktop-chromium -g "setup page"
+npx playwright test --project=desktop-chromium -g "两台手机"
 ```
 
-两份 Playwright 配置都是无头运行，并各自拉起自己的 dev server：根目录用端口 4173，`demos/voice-room` 用端口 4180。两者都优先使用 `~/.agent-browser/browsers/chrome-148.0.7778.97`，不存在时回退到自带浏览器。
+Playwright 无头运行，自己拉起 dev server（端口 4173）。优先使用 `~/.agent-browser/browsers/chrome-148.0.7778.97`，不存在时回退到自带浏览器。
 
-要求 Node.js 20 以上。`agora-rtm` 通过本机路径 `file:/Users/zhouxueqin/Downloads/agora-rtm-2.3.0-beta.0` 解析——这是机器专属的 beta 包，换机器后 `npm install` 会失败，需要一并提供该包或替换为已发布版本。
+**已知红灯（搬迁前就存在，不是回归）：** `e2e/lab.spec.ts` 的「env 未配置 → 渲染引导页」两个 project 各失败一次。原因是 `.env.local` 里配了 `VITE_APP_ID`，构建期兜底让 `resolveEnv` 恒为 `configured: true`，引导页分支在真实浏览器里进不去。该用例注释把原因归给 `index.html` 的 `??=` 注入，那个推断不完整。要修得让这条 e2e 能屏蔽构建期变量，属独立议题。
 
-## 语聊房架构（`demos/voice-room/src/`）
+要求 Node.js 20 以上。`agora-rtm@2.3.0` 尚未发布到 npm，随仓库携带在 `vendor/agora-rtm-2.3.0/`，`package.json` 用相对路径 `file:./vendor/agora-rtm-2.3.0` 引用，任意机器 clone 后 `npm install` 都能装上。**不要把它改回本机绝对路径。** 正式发布到 npm 后改为 `"agora-rtm": "^2.3.0"` 并删除 `vendor/`。归档仓库另有一份 `vendor/` 副本，两边独立，不共享。
 
-按端口与适配器分层，让房间逻辑可以完全脱离网络测试：
+## 实验室架构（`src/`）
 
 ```
-domain/            纯状态、状态转移和线上消息协议（不含 SDK、不做 I/O）
-runtime/ports/     RtmPort、RtcPort —— 与 SDK 无关的接口
-runtime/agora/     AgoraRtmAdapter、AgoraRtcAdapter、errorMap（仅此处 import SDK）
-runtime/testing/   MemoryRtmPort、MemoryRtcPort —— 记录 `operations: string[]` 调用轨迹
-runtime/           VoiceRoomClient（单端编排器）、RoomStateRepository
-components/        纯展示的房间 UI
-app/               SetupPage、RoomPage、connectionSettings、路由
+app/                     外壳：路由、两级 tab、env 解析、身份推导、样式
+  env.ts                 纯函数解析 appId：window.__ENV__ → import.meta.env → 未配置
+  envSnapshot.ts          启动时读一次全局快照（唯一有副作用的那层）
+  identity.ts            房间 ID 与两端 uid 推导，uid 带角色前缀
+scenes/
+  registry.ts            8 个一级分类 + 23 个二级场景，**只有四个字段**
+  capabilities.ts        场景能力标签（刻意不进注册表，但不丢弃）
+  voice-room/            唯一已实现的场景
+shared/
+  rtc.ts                 全场景共享的 RTC 辅助 —— 唯一允许被跨目录 import 的运行时模块
+  timeline/              trace store、多实例归并、过滤、时间线面板
+test/setup.ts            根 vitest 的 setup，服务整个 src/
+vite-env.d.ts            `vite/client` 类型引用，服务整个 src/（提供 import.meta.env 与 ?raw）
+```
+
+`src/scenes/voice-room/` 内部：
+
+```
+rtm-host.ts        房主端 RTM 单文件 ← 可拷走，零运行时依赖
+rtm-audience.ts    听众端 RTM 单文件 ← 可拷走，零运行时依赖
+state.ts           快照类型
+transitions.ts     纯函数状态转移
+stateAdapter.ts    initial / parseStored / reduce 三个纯函数，注入给 rtm-*.ts
+config.ts          SEAT_COUNT、MAX_CLIENTS、ROLES
+orchestrator.ts    同页双端编排（demo 特有，不用拷）
+VoiceRoomScene.tsx 场景容器
+components/        纯展示 UI
 ```
 
 修改这部分代码时必须保住的关键约束：
 
-**RTM Storage 是房间权威状态。** `RoomStateRepository` 读写单个 channel metadata key `voice-room-state`，其中存放一个 `VoiceRoomSnapshot`。所有变更都要走 `repository.mutate(transition)`：获取 RTM Lock `room-state` → 重新读快照 → 应用 `domain/transitions.ts` 中的纯函数转移 → 带 `majorRevision` 写入实现乐观并发 → 在 `finally` 中释放锁。不要在 `mutate()` 之外改快照，也不要往转移函数里塞 I/O，`domain/` 必须保持纯净。
+**两份 `rtm-*.ts` 零运行时依赖，这是整套设计的核心。** 只允许 import RTM SDK 本身与纯类型（`import type`，编译后消失）。**任何运行时的相对 import 都是 bug。** 两个文件各有一组 `describe('零依赖')` 测试，用 `?raw` 读源码正则扫 `^import` 把这条锁住。**不要抽共享的 RTM 基类** —— 客户拷一个文件就能跑，比拷两个互相引用的文件有价值；两份文件间约 250 行重复是刻意的，代价用「模板加规程」控制，不用抽象控制。
 
-**Lock 必须先创建才能获取。** `AgoraRtmAdapter.acquireLock` 处理了 `LOCK_NOT_EXIST`（-14008）→ 创建 → 重新获取的路径，并容忍对端客户端抢先创建导致的 `LOCK_ALREADY_EXIST`（-14004）竞态。改动锁相关代码时要保留这套处理。
+**RTM 文件里只写调用顺序，不写业务规则。** 业务规则全在注入的 `stateAdapter.reduce` 里。判据：**读快照只允许用于取参数（如拿收件人 uid），不允许用于决定动作是否合法。**
 
-**消息统一封装、带 TTL、并做去重。** `domain/protocol.ts` 把每条 RTM 负载包进 `VoiceRoomEnvelope`（`schemaVersion: 1`、`messageId`、房间与目标校验、`expiresAt`）。接收端先 `parseEnvelope`，再走 `createMessageDeduper().accept()`。治理类命令（`member.kick`、`member.ban`、`seat.mute.command`、`seat.leave.command`）设置 `requiresAck: true`，在 `ackTimers` 里登记超时，并等待 `sendExecutedAck` 回的 `command.ack`。
+**RTM Storage 是房间权威状态。** 单个 channel metadata key `voice-room-state`（常量 `SNAPSHOT_KEY`）存一个 `VoiceRoomSnapshot`。所有变更走 `mutate()`：获取 Lock `room-state`（常量 `MUTATION_LOCK`）→ 重新读快照 → 过 `stateAdapter.reduce` → 带 `majorRevision` 写入实现乐观并发 → **在 `finally` 中释放锁**。
 
-**麦位激活由媒体结果驱动。** 房主同意申请或听众接受邀请后，麦位先进入 `joining`；只有听众端 RTC `publishMicrophone()` 成功后才变成 `active`，失败则调用 `rollbackJoiningSeat` 回滚。这个顺序不能改，UI 和 E2E 测试都依赖它。
+**Lock 必须先创建才能获取。** `acquireRoomLock()` 处理 `LOCK_NOT_EXIST`（-14008）→ `setLock` → 重新获取，并容忍对端抢先创建导致的 `LOCK_ALREADY_EXIST`（-14004）竞态。这两条都是实测踩出来的路径，有测试锁住，重构时不要丢。
 
-**`connect()` 分阶段回滚。** 它用 `rtmConnected` / `rtmSubscribed` / `rtcJoined` 记录进度，出错时经 `rollbackConnect` 逆序清理，并吞掉清理过程中的异常，让最初的失败原因暴露出来。新增步骤请沿用同一模式，不要加无保护的 await。
+**消息统一封装、带 TTL、并做去重。** `createEnvelope()` 包进信封（`schemaVersion`、`messageId`、房间与目标校验、`expiresAt`），接收端先 `parseEnvelope()` 再走 `acceptOnce()`。治理类命令（踢出、封禁、强制静音、强制下麦）标记 `requiresAck: true`，在 `ackTimers` 登记超时，等对端回 `command.ack`。
 
-**重连靠重新读取，而不是重放。** RTM 从 `reconnecting` 回到 `connected` 时，`rehydrateAfterReconnect` 会重新订阅、重新拉取 Presence 和 Storage，并按最终快照对账麦克风状态。
+**麦位激活由媒体结果驱动。** 房主 `approveSeatRequest()` 只把麦位写成 `joining`；听众端 RTC 发布麦克风成功后调 `activateOwnSeat()` 才转 `active`，失败则 `rollbackOwnSeat()`。这个顺序不能改，UI 与 E2E 都依赖它。
 
-**一个标签页里跑两个真实客户端。** `RoomPage` 用同一个 `clientFactory` 创建 `host` 和 `audience` 两个 `VoiceRoomClient`，先连房主再连听众，并用 `lifecycleRef` 计数器守卫每个异步步骤，避免 React StrictMode 的重复挂载/卸载泄漏连接。测试里注入假工厂即可——`RoomClientFactory` / `RoomClientLike` 就是为此存在的。两端都会真实播放音频，人工验证时必须戴耳机。
+**`connect()` 分阶段回滚。** 用 `loggedIn` / `subscribed` 记录进度，出错经 `rollbackConnect()` 逆序清理，并吞掉清理过程中的异常，让**最初**的失败原因暴露出来。新增步骤沿用同一模式，不要加无保护的 await。
 
-**凭证只存会话级，且不在本项目生成。** `connectionSettings.ts` 负责规范化并只写入 `sessionStorage`（key 为 `agora.voice-room.connection.v1`）。空 Token 规范化为 `undefined`，RTC 适配器仅在 `client.join` 处转成 `null`。项目不接收 App Certificate、不含 Token 生成器、不预置任何凭证，也不要新增。
+**重连靠重新读取，而不是重放。** `rehydrateAfterReconnect()` 重新订阅、重新拉 Presence 与 Storage，并按最终快照对账麦克风状态。
+
+**一个标签页里跑两个真实客户端。** `orchestrator.ts` 用同一个 `createClients` 工厂创建 `host` 与 `audience`，先连房主再连听众，并用代数计数器守卫每个 await —— React StrictMode 会故意「挂载 → 卸载 → 再挂载」，不守卫就泄漏连接。测试注入假工厂。两端都会真实播放音频，**人工验证时必须戴耳机**。
+
+**时间线只呈现 RTM，`rtc.ts` 不采集 trace。** 混入 RTC 节点会稀释「RTM 数据流」这条主线。RTC 的成败体现为后续那次 RTM 调用的出现或缺席，因果仍然可读。
+
+**凭证不在本项目生成。** 不接收 App Certificate、不含 token 生成器、不预置密钥，也不要新增。appId 只从 `window.__ENV__` 或 `.env` 来；源码里刻意没有第三层硬编码兜底。
 
 ## 本项目遵循的 RTM 2.3 SDK 约定
 
-在 `login` 之前注册事件。只用 `linkState`（旧的 `status` 事件已废弃）。使用 `token` 事件，并且只把 `WILL_EXPIRE` 当作即将过期。Message、Presence、Storage、Lock 一起订阅。Presence 查询沿 `nextPage` 翻页取全部在线用户。核对来源和文档链接见 `demos/voice-room/README.md`。
+在 `login` 之前注册事件。只用 `linkState`（旧的 `status` 事件已废弃）。使用 `token` 事件，并且只把 `WILL_EXPIRE` 当作即将过期。Message、Presence、Storage、Lock 一起订阅。Presence 查询沿 `nextPage` 翻页取全部在线用户。核对来源和文档链接见根目录 `README.md`。
 
 ## 测试约定
 
-Vitest + jsdom + Testing Library，测试文件以 `*.test.ts(x)` 与源码同目录放置。运行时测试用 `MemoryRtmPort` / `MemoryRtcPort` 驱动 `VoiceRoomClient`，并断言记录下来的 `operations` 字符串轨迹（例如 `rtm:publish:user:audience-001:seat.approved`）——新增行为请沿用这种方式，而不是直接 mock Agora SDK。E2E 测试使用占位 App ID，**刻意不验证**真实 Agora 连通性；完整真实链路仍需用有效项目凭证人工验收。
+Vitest + jsdom + Testing Library，测试文件以 `*.test.ts(x)` 与源码同目录放置。
+
+**两份测试替身刻意不合并**，用途不同，别图省事并成一个：
+
+- `rtm-host.test.ts` / `rtm-audience.test.ts` 里的**假 SDK client**——通过构造参数 `createClient` 注入，记录 `operations: string[]` 调用轨迹（例如 `rtm:publish:user:audience-001:seat.approved`、`lock:set:room-state`），用来断言 RTM API 的调用顺序。这是唯一为可测性开的口子，**不要改成直接 mock Agora SDK**。
+- `testing.ts` 的 `createVoiceRoomFakes()`——给渲染真实场景的测试用（外壳路由、场景 UI）。场景一挂载就自动连接，不注入替身就会去连真实 RTM。它只需要「不发网络请求、能被驱动」，所以是无副作用空实现加少量开关。
+
+E2E 使用占位 App ID，**刻意不验证**真实 Agora 连通性；完整真实链路仍需用有效项目凭证人工验收。
 
 ## 其他约定
 
@@ -95,7 +129,7 @@ agent 配置（issue tracker、triage 标签、domain 布局）留在 `docs/agen
 
 `docs/superpowers/{specs,plans}/` 是早期 superpowers 流程留下的历史产出，按项目约束保留、不删除，但**不要再往那里新增文件**。当前在推进的 effort 是 `rtm-demo-lab`，其 spec、plan、票和 handoff 都在 `docs/scratch/rtm-demo-lab/`；配套调研笔记仍在 `docs/research/`。`rtm-scenario-lab`、`standalone-voice-room-spa` 两组文档是已归档的历史材料，留在 `docs/superpowers/` 原地。
 
-Demo 里的踢出、封禁、强制麦控都是客户端协作行为，不构成信任边界。`RoomPage` 会显式渲染生产边界告警，请保持这个表述，不要把它们说成已强制执行的权限控制。
+Demo 里的踢出、封禁、强制麦控都是客户端协作行为，不构成信任边界。`src/scenes/voice-room/components/Warnings.tsx` 的 `ProductionBoundaryWarning` 会显式渲染生产边界告警（同文件的 `HeadphonesWarning` 提示戴耳机），请保持这个表述，不要把它们说成已强制执行的权限控制。
 
 ## Agent skills
 

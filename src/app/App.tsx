@@ -11,12 +11,17 @@
  * 时间线面板的 DOM 节点不被卸载重建。
  */
 
+import { useCallback, useMemo, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom';
 
 import { EnvGuide } from './EnvGuide';
 import { ScenePlaceholder } from './ScenePlaceholder';
 import type { ResolvedEnv } from './env';
+import { SceneContextProvider, useSceneContext, type VoiceRoomOverrides } from './sceneContext';
 import { findCategory, findScene, sceneCategories } from '../scenes/registry';
+import { TimelinePanel } from '../shared/timeline/TimelinePanel';
+import type { TraceSource } from '../shared/timeline/useMergedTraces';
+import { VoiceRoomScene } from '../scenes/voice-room/VoiceRoomScene';
 
 /** 唯一已实现的场景，兼作根路径的落点。 */
 const DEFAULT_PATH = '/social/voice-room';
@@ -84,29 +89,34 @@ function SecondaryTabs({ categoryId, activeSceneId }: { categoryId: string; acti
 }
 
 /**
- * 时间线面板占位。
+ * 场景还没交上来 trace 来源时的空数组。
  *
- * 本票只保证它在主体内占住右栏；条目渲染、三维筛选与折叠交互属票 16 与票 20。
+ * **必须是模块常量** —— 每次渲染新建数组会让 `useSyncExternalStore` 的 subscribe
+ * 依赖变化而反复重订阅。
  */
-function TimelinePanelPlaceholder() {
-  return (
-    <aside className="lab-timeline" aria-label="时间线">
-      <div className="lab-timeline__header">时间线</div>
-      {/* __body 是窄屏横排的作用对象：宽屏纵向堆叠，≤1240px 时改为横向滚动。 */}
-      <div className="lab-timeline__body">
-        <p className="lab-timeline__empty">RTM 调用与事件将在这里按时间交错呈现。</p>
-      </div>
-    </aside>
-  );
-}
+const NO_TRACE_SOURCES: readonly TraceSource[] = [];
 
-/** 语聊房主区占位：本票只落路由与外壳，真实双客户端编排属票 22。 */
-function VoiceRoomStub() {
+/**
+ * 语聊房主区：真实的双客户端编排。
+ *
+ * env 与 trace 回调从上下文取 —— 场景由注册表按 id 查出来渲染，中间隔着路由，
+ * 没法用 props 传（见 `sceneContext.ts`）。
+ *
+ * 未配置 appId 时不渲染场景：`VoiceRoomScene` 一挂载就自动连接，没有 appId
+ * 连不上，只会在时间线里刷一串失败。外层路由本就会在未配置时渲染引导页，这里
+ * 只是把不变式挑明。
+ */
+function VoiceRoomContainer() {
+  const { env, publishTraceSources, voiceRoomOverrides } = useSceneContext();
+  if (!env.configured) return <EnvGuide />;
   return (
-    <div className="lab-scene-stub" data-testid="scene-voice-room">
-      <p className="lab-scene-stub__badge">已实现</p>
-      <h1 className="lab-scene-stub__title">{findScene('voice-room')?.title}</h1>
-      <p>两个真实客户端将跑在同一个标签页里。主区内容由后续票接入。</p>
+    <div data-testid="scene-voice-room">
+      <VoiceRoomScene
+        env={env}
+        search={window.location.search}
+        overrides={voiceRoomOverrides}
+        onTraceSources={publishTraceSources}
+      />
     </div>
   );
 }
@@ -119,7 +129,7 @@ function VoiceRoomStub() {
  * 登记的必须是 ready，ready 的必须登记。
  */
 export const sceneComponents = new Map<string, () => React.ReactElement>([
-  ['voice-room', VoiceRoomStub],
+  ['voice-room', VoiceRoomContainer],
 ]);
 
 function SceneNotFound() {
@@ -152,21 +162,50 @@ function SceneRoute() {
   return <SceneContainer />;
 }
 
+interface LabShellProps {
+  env: ResolvedEnv;
+  voiceRoomOverrides?: VoiceRoomOverrides;
+}
+
 /**
  * 四层外壳。作为 layout route，`<Outlet />` 之外的部分在场景切换时保持挂载。
  */
-function LabShell({ env }: { env: ResolvedEnv }) {
+function LabShell({ env, voiceRoomOverrides }: LabShellProps) {
   const { categoryId = '', sceneId = '' } = useParams();
+  // 折叠态由外壳持有，不由面板自己 —— 它要改 `.lab-body` 的栅格（1fr/400px → 1fr/40px），
+  // 那是外壳的样式，面板拿不到。
+  const [collapsed, setCollapsed] = useState(false);
+  // trace 来源由场景在挂载后交上来。外壳持有它，因为时间线面板在 `<Outlet />` 之外，
+  // 场景切换时保持挂载。
+  const [traceSources, setTraceSources] = useState<readonly TraceSource[]>(NO_TRACE_SOURCES);
+
+  // **必须是稳定引用**：场景把它放进 effect 依赖（见 `sceneContext.ts`），
+  // 每次渲染换新函数会让「交出 trace 来源」的 effect 反复重跑。
+  const publishTraceSources = useCallback((sources: readonly TraceSource[]) => {
+    // 空数组统一收敛到模块常量，避免场景卸载时交上来的新空数组触发下游重订阅。
+    setTraceSources(sources.length > 0 ? sources : NO_TRACE_SOURCES);
+  }, []);
+
+  const sceneContext = useMemo(
+    () => ({ env, publishTraceSources, voiceRoomOverrides }),
+    [env, publishTraceSources, voiceRoomOverrides],
+  );
 
   return (
     <div className="lab-shell">
       <PrimaryTabs activeCategoryId={categoryId} env={env} />
       <SecondaryTabs categoryId={categoryId} activeSceneId={sceneId} />
-      <div className="lab-body">
+      <div className="lab-body" data-timeline={collapsed ? 'collapsed' : 'expanded'}>
         <main className="lab-main">
-          <Outlet />
+          <SceneContextProvider value={sceneContext}>
+            <Outlet />
+          </SceneContextProvider>
         </main>
-        <TimelinePanelPlaceholder />
+        <TimelinePanel
+          sources={traceSources}
+          collapsed={collapsed}
+          onToggleCollapsed={() => setCollapsed((current) => !current)}
+        />
       </div>
       {/* 场景说明与能力标签的落点，本票不实现内容（见 spec 布局第四层）。 */}
       <div className="lab-bottom" data-testid="bottom-reserved" />
@@ -176,20 +215,30 @@ function LabShell({ env }: { env: ResolvedEnv }) {
 
 export interface LabRoutesProps {
   env: ResolvedEnv;
+  /**
+   * 外壳的依赖注入点，只有测试会传。
+   *
+   * 语聊房场景一挂载就自动连接，测试如果不注入假工厂就会去连真实 RTM。
+   * 生产入口（`main.tsx`）不传这个 prop，所以它不改变线上行为。
+   */
+  voiceRoomOverrides?: VoiceRoomOverrides;
 }
 
 /**
  * 路由表。不自带 router —— 由调用方提供 router 上下文，测试因此可以用
  * `MemoryRouter` 指定起始路径，生产代码用 `BrowserRouter`。
  */
-export function LabRoutes({ env }: LabRoutesProps) {
+export function LabRoutes({ env, voiceRoomOverrides }: LabRoutesProps) {
   // 渲染任何场景之前先过配置判定：未配置则只有引导页，不进场景。
   if (!env.configured) return <EnvGuide />;
 
   return (
     <Routes>
       <Route path="/" element={<Navigate to={DEFAULT_PATH} replace />} />
-      <Route path="/:categoryId/:sceneId" element={<LabShell env={env} />}>
+      <Route
+        path="/:categoryId/:sceneId"
+        element={<LabShell env={env} voiceRoomOverrides={voiceRoomOverrides} />}
+      >
         <Route index element={<SceneRoute />} />
       </Route>
       <Route path="*" element={<Navigate to={DEFAULT_PATH} replace />} />

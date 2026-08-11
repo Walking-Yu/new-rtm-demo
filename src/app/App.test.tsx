@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { LabRoutes, sceneComponents } from './App';
 import { capabilitiesOf } from '../scenes/capabilities';
 import { allScenes, sceneCategories } from '../scenes/registry';
+import { createVoiceRoomFakes } from '../scenes/voice-room/testing';
 
 /** 已配置的 env，供大多数用例复用。 */
 const CONFIGURED = { configured: true, appId: 'test-app-id', source: 'window.__ENV__' } as const;
@@ -13,6 +14,9 @@ const CONFIGURED = { configured: true, appId: 'test-app-id', source: 'window.__E
 /**
  * 测起始路径用 `MemoryRouter` 包 `LabRoutes`。
  * `App` 自带 `BrowserRouter`，路由表单独导出正是为了让测试能换 router。
+ *
+ * **必须注入语聊房替身。** 语聊房场景一挂载就自动连接（零表单进房），不注入的话
+ * 这里每个用例都会去连真实 RTM。外壳测试关心的是路由与四层布局，不是连接结果。
  */
 function renderApp(
   options: { env?: typeof CONFIGURED | { configured: false }; path?: string } = {},
@@ -20,7 +24,7 @@ function renderApp(
   const { env = CONFIGURED, path = '/' } = options;
   return render(
     <MemoryRouter initialEntries={[path]}>
-      <LabRoutes env={env} />
+      <LabRoutes env={env} voiceRoomOverrides={createVoiceRoomFakes().overrides} />
     </MemoryRouter>,
   );
 }

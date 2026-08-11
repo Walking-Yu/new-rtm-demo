@@ -6,7 +6,7 @@ Blocked by: —
 
 ## Question
 
-当前 `agora-rtm` 通过本机路径 `file:/Users/zhouxueqin/Downloads/agora-rtm-2.3.0-beta.0` 解析，任何人 clone 之后 `npm install` 直接失败。开源前必须让任意机器可安装。
+当前 `agora-rtm` 通过本机绝对路径下的 `agora-rtm-2.3.0-beta.0` 目录解析，任何人 clone 之后 `npm install` 直接失败。开源前必须让任意机器可安装。
 
 需要做的事：
 

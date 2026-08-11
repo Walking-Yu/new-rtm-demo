@@ -6,13 +6,9 @@
   "scripts": {
     "dev": "vite --port 8080",
     "build": "tsc -b && vite build",
-    "test": "vitest run && npm --prefix demos/voice-room test",
+    "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "npm --prefix demos/voice-room run test:e2e",
-    "test:legacy": "vitest run",
-    "build:legacy": "tsc -b && vite build",
-    "dev:legacy": "vite --port 8081 --open /legacy.html",
-    "dev:voice-room": "npm --prefix demos/voice-room run dev"
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "agora-rtc-sdk-ng": "4.24.6",

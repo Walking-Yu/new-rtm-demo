@@ -1,0 +1,31 @@
+MIT License
+
+Copyright (c) 2026 RTM 场景实验室 contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+本许可证只覆盖本仓库自身的 demo 代码与文档。
+
+`vendor/agora-rtm-2.3.0/` 下的 Agora RTM Web SDK **不在本许可证范围内**：其版权归
+声网（Agora Lab, Inc.）所有，遵循该包自带的许可声明（`package.json` 的 `license`
+字段为 `Apache`，另见包内 `README.md`）。它随仓库携带只是因为该版本尚未发布到 npm，
+发布后应改为版本号依赖并删除 `vendor/`。`agora-rtc-sdk-ng` 通过 npm 安装，同样遵循
+其自身许可证。

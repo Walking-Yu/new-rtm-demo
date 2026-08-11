@@ -1,13 +1,15 @@
 /**
  * 场景注册表：8 个一级分类 + 23 个二级场景。
  *
- * 数据来自遗留的 `src/legacy/domain/scenarioCatalog.ts`，但**只取四个字段**。
+ * 数据来自遗留的 `domain/scenarioCatalog.ts`，但**只取四个字段**。
  * 遗留注册表里的 `canvas` / `roles` / `actions` / `initialStatus` / `supportsRealRtm`
  * 服务于「一套通用 UI 数据驱动渲染 24 个场景」，与新架构「一场景一份 RTM 单文件 +
  * 独立主容器」正面冲突，一律不进来（见 spec「场景注册表」的丢弃字段表）。
  *
- * `roles` / `capabilities` 两项不进注册表但**不丢弃** —— 它们仍在遗留文件里，
- * 作为后续每个场景 effort 的实现资料。
+ * `roles` / `capabilities` 两项不进注册表但**不丢弃**：`capabilities` 已搬进同目录
+ * `capabilities.ts`，含角色清单的完整归档见
+ * `docs/scratch/rtm-demo-lab/场景实现资料.md`。遗留实验室本身已搬出仓库
+ * （`../new-rtm-demo-legacy/src/legacy/`），不要再指望从这里 import 它。
  *
  * 23 = 遗留 24 − 2 + 1：`voice-room-interaction`（礼物弹幕）与 `voice-room-seats`
  * （上下麦）合并成唯一一个已实现场景 `voice-room`。

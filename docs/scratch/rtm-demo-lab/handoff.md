@@ -97,7 +97,9 @@ vendor/
 按会咬人的顺序排：
 
 1. **仓库一个 commit 都没有。** `git log` 报 `your current branch 'master' does not have any commits yet`，索引里已 `git add` 了 134 个文件。开源前需要建立基线 —— 但**不要擅自 commit**，`CLAUDE.md` 明确要求 git 提交类操作必须由用户显式发起。
-2. **依赖指向本机绝对路径。** 根 `package.json` 与 `demos/voice-room/package.json` 都写着 `"agora-rtm": "file:/Users/zhouxueqin/Downloads/agora-rtm-2.3.0-beta.0"`。换机器 `npm install` 直接失败。`11` 已决定改为 vendor 相对路径，但 `vendor/` 目录**还没建**，包也还没复制进来。源包在 `/Users/zhouxueqin/Desktop/agora-rtm-demo/agora-rtm@2.3.0`（已核验是 2.3.0 正式版、零 runtime 依赖、license `Apache`）。
+2. **依赖指向本机绝对路径。** 根 `package.json` 与 `demos/voice-room/package.json` 都把 `agora-rtm` 指向本机绝对路径下的 beta 包。换机器 `npm install` 直接失败。`11` 已决定改为 vendor 相对路径，但 `vendor/` 目录**还没建**，包也还没复制进来。源包是本机另一处目录下的 `agora-rtm@2.3.0`（已核验是 2.3.0 正式版、零 runtime 依赖、license `Apache`）。
+
+   > 已在 `24` 落地：包已复制进 `vendor/agora-rtm-2.3.0/`，两处依赖均改为相对路径 `file:./vendor/agora-rtm-2.3.0`（`demos/voice-room` 侧为 `file:../../vendor/agora-rtm-2.3.0`），仓库内已无机器专属绝对路径。
 3. **`agora-rtm@2.3.0` 仍未发布到 npm**，registry 最高 `2.2.4`。发布后要把 `file:./vendor/...` 换成 `^2.3.0` 并删掉 `vendor/`。
 4. **多 RTM 实例是实测可行、官方文档未保证。** 这是整个架构的地基（一角色一个 client 实例），README 必须显式声明这一状态，否则客户照抄进生产、日后 SDK 行为变化时会误判归因。
 5. **`agora-rtc-sdk-ng` 版本没锁**，写的是 `"latest"`。`03` 已决定锁版本，还没落地。

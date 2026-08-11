@@ -6,8 +6,10 @@
  * 但票 15 要求占位页写明「该场景计划演示哪些 RTM 能力」，所以数据不能丢，
  * 只能换个模块住（见 spec「场景注册表」的丢弃字段表：能力标签「不进注册表但不丢弃」）。
  *
- * 数据来源是遗留的 `src/legacy/domain/scenarioCatalog.ts`，逐条搬运。
- * 人类可读的完整归档（含角色清单）见 `docs/scratch/rtm-demo-lab/场景实现资料.md`。
+ * 数据来源是遗留的 `scenarioCatalog.ts`，逐条搬运（遗留实验室已搬出本仓库，
+ * 现在 `new-rtm-demo-legacy/src/legacy/domain/scenarioCatalog.ts`）。
+ * 人类可读的完整归档（含角色清单）见 `docs/scratch/rtm-demo-lab/场景实现资料.md`，
+ * **那份归档仍在本仓库内** —— 后续场景实现看它就够，不必回去翻遗留仓库。
  */
 
 /** 取值与遗留 `Capability` 类型一致，只有这五个。 */

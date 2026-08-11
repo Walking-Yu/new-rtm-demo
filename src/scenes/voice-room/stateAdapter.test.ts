@@ -10,7 +10,7 @@ function validSnapshot(): VoiceRoomSnapshot {
 }
 
 describe('createInitial', () => {
-  it('生成的初始快照与遗留的 createInitialSnapshot 一致', () => {
+  it('生成 4 个麦位、房主占 seat-0、队列与封禁为空', () => {
     const snapshot = createInitial('host-aaa111');
 
     expect(snapshot.revision).toBe(0);
@@ -31,7 +31,7 @@ describe('parseStored', () => {
   });
 
   it('无效输入返回空值由调用方兜底 —— 不返回 fallback 快照', () => {
-    // 刻意不沿用遗留的「无效返回兜底值」：兜底策略归调用方，
+    // 刻意不返回兜底值：兜底策略归调用方，
     // 归一函数只负责回答「这份数据能不能用」。
     expect(parseStored(undefined)).toBeUndefined();
     expect(parseStored('')).toBeUndefined();

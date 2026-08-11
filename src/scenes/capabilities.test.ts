@@ -10,7 +10,7 @@ describe('场景能力标签', () => {
     }
   });
 
-  it('标签取值只有遗留 Capability 类型的五个值', () => {
+  it('标签取值只有这五个，不得出现别的能力名', () => {
     const allowed = new Set(['用户消息', '消息频道', 'Presence', 'Storage', 'Lock']);
 
     for (const capabilities of Object.values(sceneCapabilities)) {
@@ -28,7 +28,7 @@ describe('场景能力标签', () => {
     }
   });
 
-  it('语聊房的能力是两个遗留场景的并集，含 Lock', () => {
+  it('语聊房同时覆盖礼物弹幕与上下麦，所以含 Lock', () => {
     expect(capabilitiesOf('voice-room')).toEqual(
       expect.arrayContaining(['消息频道', 'Storage', 'Lock']),
     );

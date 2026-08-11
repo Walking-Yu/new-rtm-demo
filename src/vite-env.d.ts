@@ -8,8 +8,7 @@
  *    其中 `rtm-host.test.ts` / `rtm-audience.test.ts` 的「零依赖」用例
  *    正是靠 `?raw` 扫 import 语句守住那条铁律的。
  *
- * 这一行原先住在 `src/legacy/vite-env.d.ts`，却服务整个 `src/`。遗留实验室
- * 搬去 `new-rtm-demo-legacy` 时它跟着走了，`tsc -b` 立刻报 7 个错（`import.meta.env`
- * 不存在、`?raw` 模块找不到）。**不要再把它放进任何某一个场景或子目录里** ——
- * 它是全 `src/` 的公共声明，就该住在 `src/` 根下。
+ * **不要把它放进任何某一个场景或子目录里** —— 它是全 `src/` 的公共声明，就该住在
+ * `src/` 根下。挪走或删掉它，`tsc -b` 会立刻报一批 `import.meta.env` 不存在、
+ * `?raw` 模块找不到的错。
  */

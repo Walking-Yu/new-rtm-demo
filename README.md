@@ -237,11 +237,6 @@ components/        纯展示组件
 **不需要拷的**：`src/app/`（外壳）、`src/shared/`（时间线与 RTC 脚手架）、`components/`（展示层）、
 `orchestrator.ts`（同页两端编排是 demo 特有需求）。
 
-如果想要的是一个能直接改的完整应用而不是单个文件，那份独立 SPA（自带 `package.json`
-与启动脚本、不引用根目录 `src/`）已搬出本仓库，落在同级目录
-`../new-rtm-demo-legacy/demos/voice-room/`。它与 `src/scenes/voice-room/` 是两套实现
-同一功能，属历史遗留 —— 新场景请以本仓库的单文件形态为准。
-
 ---
 
 ## 关于 vendor 里的 SDK
@@ -254,19 +249,15 @@ components/        纯展示组件
 
 正式发布到 npm 后：把依赖改回 `"agora-rtm": "^2.3.0"` 并删除 `vendor/` 目录。
 
+## Codex / Claude + Matt 工作流
+
+仓库同时支持 Codex 与 Claude Code：`AGENTS.md` 和 `CLAUDE.md` 是内容完全一致的项目规则入口，修改时必须同步。`docs/agents/` 保存两端共享的 Matt 工作流配置，`docs/scratch/` 保存 spec、map、issues 和 handoff 等工作产物。
+
+Matt skills 是开发环境依赖，不是本应用的 npm 依赖。使用相关流程前，需要在 Agent 环境中安装 `mattpocock/skills`，并确认能显式调用 `wayfinder`、`to-spec`、`to-tickets`、`implement`、`tdd`、`code-review`、`domain-modeling` 等 skills。不同客户端使用各自支持的显式 skill 调用入口。
+
+项目规则优先于 skill 默认动作。除非用户明确要求，不得因为 `implement` 或其他 skill 的建议而运行 `git add`、`git commit`、`git push` 或同类命令。
+
 ## 许可证
 
 本仓库自身的 demo 代码与文档采用 MIT，见 [`LICENSE`](LICENSE)。
 `vendor/` 下的 SDK 与通过 npm 安装的 `agora-rtc-sdk-ng` 各自遵循其自身许可证。
-
-## 已搬出本仓库的两套历史代码
-
-原先与本实验室共存的两套代码已整体搬到同级目录 `../new-rtm-demo-legacy/`：
-
-- `demos/voice-room/` —— 独立可拷走的语聊房 SPA（自带设置页，需手填凭证）。仍可运行，
-  单测 64 项全绿。
-- `legacy-lab/` —— 早期的 24 场景实验室（原 `src/legacy/` + `legacy.html` +
-  `e2e/scenarios.spec.ts`）。搬过去的是裸源码，尚未配构建，暂不能独立运行。
-
-本仓库因此不再有 `demos/`、`src/legacy/`、`legacy.html`，也没有 `dev:legacy` /
-`test:legacy` / `build:legacy` / `dev:voice-room` 这些脚本。详情见归档仓库的 `README.md`。

@@ -8,7 +8,7 @@
 import { Headphones, ShieldAlert } from 'lucide-react';
 
 /**
- * 耳机告警。文案与遗留实现逐字一致。
+ * 耳机告警。
  *
  * 一个标签页里两个真实客户端**都会真实播放远端音频**，外放必然啸叫。
  */

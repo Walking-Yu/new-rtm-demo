@@ -153,7 +153,7 @@ export interface ClientsConfig {
 type HostHandlers = VoiceRoomHostHandlers;
 type AudienceHandlers = VoiceRoomAudienceHandlers;
 
-/** 说话高亮的音量阈值。与遗留 UI 一致。 */
+/** 说话高亮的音量阈值。 */
 const SPEAKING_THRESHOLD = 30;
 
 /** 公屏只留最近这么多条 —— 无上限会让长时间演示吃掉内存。 */

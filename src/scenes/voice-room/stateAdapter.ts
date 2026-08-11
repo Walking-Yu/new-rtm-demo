@@ -38,8 +38,8 @@ import {
  * 房间动作。语义方法在内部构造它，再交给 `reduce`。
  *
  * 静音与下麦**刻意分成语义不同的动作**：房主侧是强制（对他人），
- * 听众侧是自主（对自己）。遗留代码靠「目标 uid 是否为空」区分的隐式分支
- * 由此消掉（见 spec「角色 RTM 单文件的契约」）。
+ * 听众侧是自主（对自己）。不要合并成一个动作再靠「目标 uid 是否为空」
+ * 区分 —— 那是隐式分支（见 spec「角色 RTM 单文件的契约」）。
  */
 export type VoiceRoomAction =
   | { type: 'seat.request'; request: SeatRequest }
@@ -70,8 +70,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * 校验归一。**无效返回 `undefined`，不返回兜底快照** ——
- * 刻意不沿用遗留的「无效返回 fallback」：归一函数只回答「这份数据能不能用」，
- * 由调用方决定兜底策略（见票 17 与 spec）。
+ * 归一函数只回答「这份数据能不能用」，由调用方决定兜底策略（见 spec）。
  */
 function parseStored(raw: string | undefined): VoiceRoomSnapshot | undefined {
   if (!raw) return undefined;

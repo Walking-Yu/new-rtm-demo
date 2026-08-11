@@ -5,7 +5,7 @@
  * 端数是场景自己的事，写在场景目录（见票 08 与 spec「场景注册表」）。
  */
 
-/** 麦位数。与遗留 `createInitialSnapshot` 生成的麦位数一致。 */
+/** 麦位数。`createInitialSnapshot` 按这个数生成空麦位。 */
 export const SEAT_COUNT = 4;
 
 /**

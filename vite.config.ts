@@ -1,8 +1,11 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
+  // E2E 通过页面脚本显式注入环境，不读取开发者本机的任何 `.env*` 文件。
+  // 普通 dev/build 的 envDir 保持默认值，因此 `.env.local` 仍正常生效。
+  envDir: mode === 'e2e' ? false : undefined,
   /*
    * vendor 里的 RTM SDK 是 UMD/CJS 产物（`module.exports = ...`，无 `exports.default`）。
    * 生产构建走 Rollup 的 commonjs 转换没问题，但开发服务器不预构建它时会按 ESM 解析，
@@ -15,9 +18,8 @@ export default defineConfig({
     include: ['agora-rtm'],
   },
   /*
-   * 不配置 `build.rollupOptions.input`：现在只有根 `index.html` 一个入口，
-   * 走 Vite 默认行为即可。遗留实验室的 `legacy.html` 第二入口已随遗留代码
-   * 一起搬去 `new-rtm-demo-legacy` 仓库，这里不再保留。
+   * 不配置 `build.rollupOptions.input`：只有根 `index.html` 一个入口，
+   * 走 Vite 默认行为即可。
    */
   test: {
     environment: 'jsdom',
@@ -25,4 +27,4 @@ export default defineConfig({
     css: true,
     include: ['src/**/*.test.{ts,tsx}', 'tests/**/*.test.{ts,tsx}'],
   },
-});
+}));

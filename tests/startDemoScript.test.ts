@@ -4,13 +4,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * 这份测试守的是「一键启动」与「默认命令指向新骨架」这两件事。
+ * 这份测试守的是仓库的「启动契约」：一条命令能起来，默认命令指向根目录的实验室，
+ * 构建只产出单入口，vitest 的 setup 住在 `src/test/` 下。
  *
- * 遗留的 24 场景实验室（原 `src/legacy/`、`legacy.html`、`e2e/scenarios.spec.ts`）
- * 与独立语聊房 SPA（原 `demos/voice-room/`）已整体搬去 `new-rtm-demo-legacy`
- * 仓库。原先断言它们存在的用例改为断言**它们不再被主仓库引用** —— 反向断言
- * 是必要的：只删掉旧断言的话，日后谁把 `--prefix demos/voice-room` 之类的
- * 转发加回来，测试不会拦。
+ * 断言全部写成正向形式（「应该是什么」），不写「不应该是什么」—— 后者需要预设
+ * 一份历史清单，读的人无从判断清单为何如此。
  */
 describe('start-demo.sh', () => {
   it('provides an executable environment check for one-command startup', () => {
@@ -24,9 +22,8 @@ describe('start-demo.sh', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Demo environment is ready');
-    // 启动器现在直接跑根目录新骨架，不再转发给已搬走的独立 SPA
     expect(result.stdout).toContain('scenes/voice-room');
-    // vendor 进仓库的是 2.3.0 正式版
+    // vendor 里携带的是 2.3.0 正式版
     expect(result.stdout).toContain('agora-rtm@2.3.0');
     expect(result.stdout).toContain('agora-rtc-sdk-ng@4.24.6');
   });
@@ -42,58 +39,66 @@ describe('start-demo.sh', () => {
     expect(result.stdout).toContain('Default URL: http://127.0.0.1:8080/');
   });
 
-  it('points default npm workflows at the root skeleton', () => {
+  it('keeps the four default npm workflows pointed at this package', () => {
     const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;
     };
+
+    // 四条默认命令都在本包内执行，不跨包委托（`--prefix` 会破坏这一点）
     expect(packageJson.scripts.dev).toBe('vite --port 8080');
     expect(packageJson.scripts.build).toBe('tsc -b && vite build');
     expect(packageJson.scripts.test).toBe('vitest run');
     expect(packageJson.scripts['test:e2e']).toBe('playwright test');
-  });
 
-  it('keeps no script delegating to the relocated legacy packages', () => {
-    const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
-      scripts: Record<string, string>;
-    };
-    const scriptNames = Object.keys(packageJson.scripts);
-    expect(scriptNames).not.toContain('dev:legacy');
-    expect(scriptNames).not.toContain('test:legacy');
-    expect(scriptNames).not.toContain('build:legacy');
-    expect(scriptNames).not.toContain('dev:voice-room');
-    expect(scriptNames).not.toContain('test:e2e:legacy');
-
-    // 没有任何脚本还在委托给搬走的目录
     for (const command of Object.values(packageJson.scripts)) {
-      expect(command).not.toContain('demos/voice-room');
-      expect(command).not.toContain('legacy.html');
+      expect(command).not.toContain('--prefix');
     }
   });
 
-  it('builds a single entry now that the legacy entry is gone', () => {
-    // 入口文件本身消失，这是「不再产出第二入口」的硬事实
-    expect(existsSync(resolve(process.cwd(), 'legacy.html'))).toBe(false);
+  it('builds exactly one entry from the repo root', () => {
+    // 只有一个入口页
+    expect(existsSync(resolve(process.cwd(), 'index.html'))).toBe(true);
 
     /*
-     * 断言不再配置多入口。
-     *
-     * 这里刻意**不**做 `not.toContain('legacy.html')` 的整份文件子串匹配 ——
-     * 配置里的注释也会命中，说明搬迁原因的注释反而会让断言变红。改为断言
-     * 「没有 rollupOptions.input 这种多入口配置」，匹配的是行为而不是字符。
+     * 断言不配置多入口。匹配的是 `rollupOptions`（多入口必经的配置项）而不是
+     * 某个具体文件名 —— 前者是行为，后者只是字符。注释先剥掉，避免说明性文字
+     * 意外命中。
      */
     const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
     const withoutComments = viteConfig
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '');
-    expect(withoutComments).not.toContain('legacy.html');
     expect(withoutComments).not.toContain('rollupOptions');
   });
 
-  it('runs vitest setup from a location the skeleton owns', () => {
-    // setup 原先住在 src/legacy/test/ 下，却服务整个根 vitest —— 搬迁前已提出来
+  it('runs vitest setup from src/test', () => {
     const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
     expect(viteConfig).toContain('./src/test/setup.ts');
     expect(existsSync(resolve(process.cwd(), 'src/test/setup.ts'))).toBe(true);
-    expect(existsSync(resolve(process.cwd(), 'src/legacy'))).toBe(false);
+  });
+
+  it('keeps archived applications outside this single-application repository', () => {
+    for (const archivedPath of [
+      'demos/voice-room',
+      'src/legacy',
+      'legacy.html',
+      'e2e/scenarios.spec.ts',
+    ]) {
+      expect(existsSync(resolve(process.cwd(), archivedPath)), archivedPath).toBe(false);
+    }
+
+    const domainGuide = readFileSync(resolve(process.cwd(), 'docs/agents/domain.md'), 'utf8');
+    expect(domainGuide).toContain('本仓库只有一个应用');
+    expect(domainGuide).not.toContain('demos/voice-room/');
+    expect(domainGuide).not.toContain('src/legacy/');
+  });
+
+  it('isolates e2e from the developer local env without changing normal dev mode', () => {
+    const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
+    const playwrightConfig = readFileSync(resolve(process.cwd(), 'playwright.config.ts'), 'utf8');
+
+    expect(viteConfig).toContain("mode === 'e2e' ? false : undefined");
+    expect(playwrightConfig).toContain('--mode e2e');
+    expect(playwrightConfig).toContain('reuseExistingServer: false');
   });
 });

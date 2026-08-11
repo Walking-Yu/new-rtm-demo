@@ -28,8 +28,9 @@ export default defineConfig({
     { name: 'mobile-chromium', use: { ...devices['Pixel 7'] } },
   ],
   webServer: {
-    command: 'npm run dev -- --host 127.0.0.1 --port 4173',
+    command: 'npm run dev -- --mode e2e --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173',
-    reuseExistingServer: !process.env.CI,
+    // 不复用普通 mode 启动的服务，否则它可能已经加载了本机 `.env.local`。
+    reuseExistingServer: false,
   },
 });

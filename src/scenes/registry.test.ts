@@ -19,13 +19,13 @@ describe('场景注册表', () => {
     ]);
   });
 
-  it('二级条目共 23 个（遗留 24 个中的两个语聊房场景合并为一个）', () => {
+  it('二级条目共 23 个', () => {
     expect(allScenes).toHaveLength(23);
   });
 
   it('二级条目只有 id/title/summary/status 四个字段', () => {
     for (const scene of allScenes) {
-      // 防止遗留注册表里服务于「一套通用 UI 数据驱动渲染」的字段被顺手加回来：
+      // 这道护栏防的是「服务于一套通用 UI 数据驱动渲染」的字段被加进来：
       // canvas、roles、actions、initialStatus、supportsRealRtm 等一律不得出现。
       expect(Object.keys(scene).sort()).toEqual(ALLOWED_SCENE_KEYS);
     }

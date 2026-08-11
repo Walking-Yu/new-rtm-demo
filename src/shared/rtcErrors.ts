@@ -49,7 +49,7 @@ function errorDetail(error: unknown): string {
   return '';
 }
 
-/** 把 SDK 抛出的任意值归一成一句可读中文。沿用遗留 `errorMap.ts` 的判据。 */
+/** 把 SDK 抛出的任意值归一成一句可读中文。 */
 export function describeRtcError(error: unknown): string {
   const detail = errorDetail(error);
   if (

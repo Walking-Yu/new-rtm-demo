@@ -20,10 +20,10 @@
 import { createContext, useContext } from 'react';
 import type { ResolvedEnv } from './env';
 import type { TraceSource } from '../shared/timeline/useMergedTraces';
-import type { OrchestratorDeps } from '../scenes/voice-room/orchestrator';
+import type { VoiceRoomSceneProps } from '../scenes/voice-room/VoiceRoomScene';
 
 /** 场景可注入的依赖。目前只有语聊房一个已实现场景。 */
-export type VoiceRoomOverrides = Pick<OrchestratorDeps, 'createClients' | 'createRtc'>;
+export type VoiceRoomOverrides = NonNullable<VoiceRoomSceneProps['overrides']>;
 
 export interface SceneContextValue {
   env: ResolvedEnv;

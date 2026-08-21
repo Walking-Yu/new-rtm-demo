@@ -12,8 +12,8 @@ import { toTraceSource, type TraceSource } from './useMergedTraces';
 import panelSource from './TimelinePanel.tsx?raw';
 import stylesSource from '../../app/styles.css?raw';
 
-/** 固定基准时间戳：`00:12:34.567`，用来盯住「砍掉小时」。 */
-const BASE = new Date(2026, 0, 1, 9, 12, 34, 567).getTime();
+/** 固定基准时间戳：北京时间 `17:12:34.567`。 */
+const BASE = Date.UTC(2026, 0, 1, 9, 12, 34, 567);
 
 interface Endpoint {
   store: TraceStore;
@@ -72,6 +72,22 @@ function rowTexts(): string[] {
 }
 
 describe('两类条目与图例', () => {
+  it('新条目用淡色背景提示，并在 5 秒后恢复普通背景', () => {
+    expect(stylesSource).toMatch(
+      /\.lab-trace:not\(\[data-failed="true"\]\)\s*\{[^}]*animation:\s*lab-trace-arrival 5s ease-out forwards/,
+    );
+    expect(stylesSource).toContain('@keyframes lab-trace-arrival');
+    expect(stylesSource).toMatch(/100%\s*\{\s*background-color:\s*#fff/);
+  });
+
+  it('有新条目时自动滚到时间线底部', () => {
+    const { host } = setup();
+    const body = screen.getByTestId('timeline-body');
+    Object.defineProperty(body, 'scrollHeight', { configurable: true, value: 480 });
+    host.record({ name: 'rtm.subscribe' });
+    expect(body.scrollTop).toBe(480);
+  });
+
   it('api 与 event 的色点带不同的 data-kind，靠视觉标记区分', () => {
     const { host } = setup();
     host.record({ name: 'rtm.login', kind: 'api' });
@@ -84,6 +100,22 @@ describe('两类条目与图例', () => {
       const dot = row.querySelector('.lab-trace__dot');
       expect(dot?.getAttribute('data-kind')).toBe(row.getAttribute('data-kind'));
     }
+  });
+
+  it('事件按“事件、type tag、事件名、详情”展示，摘要不重复 type', () => {
+    const { host } = setup();
+    host.record({
+      name: 'presence',
+      kind: 'event',
+      eventTag: 'REMOTE_STATE_CHANGED',
+      summary: 'Emma_301 muted=false',
+    });
+
+    const row = rows()[0];
+    expect(row.querySelector('[data-kind="event-type"]')?.textContent).toBe('REMOTE_STATE_CHANGED');
+    expect(row.querySelector('.lab-trace__tag[data-kind="event"]')?.textContent).toBe('事件');
+    expect(row.querySelector('.lab-trace__name')?.textContent).toBe('presence');
+    expect(row.querySelector('.lab-trace__summary')?.textContent).toBe('Emma_301 muted=false');
   });
 
   it('面板顶部给出两类的图例，且色点样式与条目里的同一个类名', () => {
@@ -112,6 +144,19 @@ describe('两类条目与图例', () => {
     // 类型筛选器的选项就是全部出现过的 kind，恒定只有这两个。
     const options = within(screen.getByTestId('filter-kind')).getAllByRole('button');
     expect(options.map((button) => button.textContent)).toEqual(['调用 RTM API', '收到 RTM 事件']);
+  });
+
+  it('默认展示 linkState 事件，可手动隐藏连接事件', async () => {
+    const { host } = setup();
+    host.record({ name: 'linkState', kind: 'event' });
+    host.record({ name: 'storage', kind: 'event' });
+
+    expect(rowTexts()).toEqual([
+      expect.stringContaining('linkState'),
+      expect.stringContaining('storage'),
+    ]);
+    await userEvent.setup().click(screen.getByRole('button', { name: '隐藏连接' }));
+    expect(rowTexts()).toEqual([expect.stringContaining('storage')]);
   });
 });
 
@@ -167,14 +212,12 @@ describe('uid badge 配色', () => {
 });
 
 describe('时间格式', () => {
-  it('砍掉小时，只到分秒毫秒', () => {
+  it('使用北京时间，显示时分秒毫秒', () => {
     const { host } = setup();
     host.record({ name: 'rtm.login' });
 
     const time = rows()[0].querySelector('.lab-trace__time');
-    expect(time?.textContent).toBe('12:34.567');
-    // 小时位（09）不出现
-    expect(time?.textContent).not.toContain('09');
+    expect(time?.textContent).toBe('17:12:34.567');
   });
 
   it('毫秒补到三位，便于分辨紧邻调用', () => {
@@ -182,15 +225,15 @@ describe('时间格式', () => {
     const sources = [host.source];
     render(<TimelinePanel sources={sources} />);
     act(() => {
-      host.store.record({ at: new Date(2026, 0, 1, 9, 5, 6, 7).getTime(), kind: 'api', name: 'a' });
+      host.store.record({ at: Date.UTC(2026, 0, 1, 9, 5, 6, 7), kind: 'api', name: 'a' });
     });
 
-    expect(rows()[0].querySelector('.lab-trace__time')?.textContent).toBe('05:06.007');
+    expect(rows()[0].querySelector('.lab-trace__time')?.textContent).toBe('17:05:06.007');
   });
 });
 
-describe('三维筛选', () => {
-  /** 两端各两类，共 4 条，覆盖三个维度的全部组合面。 */
+describe('类型筛选', () => {
+  /** 两端各两类，共 4 条，覆盖 API 与事件。 */
   function seed() {
     const context = setup();
     context.host.record({ name: 'rtm.login', kind: 'api' });
@@ -211,77 +254,14 @@ describe('三维筛选', () => {
     expect(rows().every((row) => row.getAttribute('data-kind') === 'event')).toBe(true);
   });
 
-  it('按角色筛选', async () => {
-    const user = userEvent.setup();
+  it('只提供类型筛选，不渲染角色或 UID 筛选', () => {
     seed();
 
-    await user.click(within(screen.getByTestId('filter-role')).getByRole('button', { name: 'host' }));
-
-    expect(rows()).toHaveLength(2);
-    expect(rows().every((row) => row.getAttribute('data-role') === 'host')).toBe(true);
+    expect(screen.getByTestId('filter-kind')).toBeInTheDocument();
+    expect(screen.queryByTestId('filter-role')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('filter-uid')).not.toBeInTheDocument();
   });
 
-  it('按 uid 筛选', async () => {
-    const user = userEvent.setup();
-    seed();
-
-    await user.click(screen.getByRole('button', { name: 'audience-bbb' }));
-
-    expect(rows()).toHaveLength(2);
-    for (const row of rows()) {
-      expect(within(row).getByTestId('uid-badge').textContent).toBe('audience-bbb');
-    }
-  });
-
-  it('三维可叠加，取交集', async () => {
-    const user = userEvent.setup();
-    seed();
-
-    await user.click(screen.getByRole('button', { name: '调用 RTM API' }));
-    await user.click(within(screen.getByTestId('filter-role')).getByRole('button', { name: 'host' }));
-    await user.click(screen.getByRole('button', { name: 'host-aaa' }));
-
-    expect(rowTexts()).toHaveLength(1);
-    expect(rowTexts()[0]).toContain('rtm.login');
-  });
-
-  it('同一维内多选是并集，不是互斥单选', async () => {
-    const user = userEvent.setup();
-    seed();
-    const roleFilter = screen.getByTestId('filter-role');
-
-    await user.click(within(roleFilter).getByRole('button', { name: 'host' }));
-    await user.click(within(roleFilter).getByRole('button', { name: 'audience' }));
-
-    expect(rows()).toHaveLength(4);
-  });
-
-  it('三个维度都是条目上已有字段，不为筛选新增数据字段', () => {
-    const store = createTraceStore({ uid: 'host-aaa', role: 'host' });
-    store.record({ at: BASE, kind: 'api', name: 'rtm.login' });
-
-    // 条目字段就是这些；kind / role / uid 全在其中，没有任何 `filter*` 之类的附加字段。
-    expect(Object.keys(store.getEntries()[0]).sort()).toEqual([
-      'at',
-      'kind',
-      'name',
-      'role',
-      'seq',
-      'uid',
-    ]);
-  });
-
-  it('筛选器选项从全量条目算，不从筛选结果算 —— 否则选一维就回不去了', async () => {
-    const user = userEvent.setup();
-    seed();
-
-    await user.click(within(screen.getByTestId('filter-role')).getByRole('button', { name: 'host' }));
-
-    // 选了 host 之后，audience 这个选项必须还在。
-    const roleOptions = within(screen.getByTestId('filter-role')).getAllByRole('button');
-    expect(roleOptions.map((button) => button.textContent)).toEqual(['host', 'audience']);
-    expect(within(screen.getByTestId('filter-uid')).getAllByRole('button')).toHaveLength(2);
-  });
 });
 
 describe('取消筛选后条目恢复', () => {
@@ -329,34 +309,18 @@ describe('取消筛选后条目恢复', () => {
     const user = userEvent.setup();
     const { audience } = seed();
 
-    await user.click(within(screen.getByTestId('filter-role')).getByRole('button', { name: 'host' }));
-    expect(rows()).toHaveLength(2);
+    await user.click(screen.getByRole('button', { name: '收到 RTM 事件' }));
+    expect(rows()).toHaveLength(1);
 
-    // 筛选态下听众端又记了一条：不该显示，但必须已经进 store。
+    // 筛选态下听众端又记了一条 API：不该显示，但必须已经进 store。
     audience.record({ name: 'storage.get' });
-    expect(rows()).toHaveLength(2);
+    expect(rows()).toHaveLength(1);
     expect(audience.store.getEntries()).toHaveLength(2);
 
     await user.click(screen.getByTestId('filter-reset'));
 
     expect(rows()).toHaveLength(4);
     expect(rowTexts().join('')).toContain('storage.get');
-  });
-
-  it('筛到空集时给的是「取消筛选即可恢复」，不是「没有数据」', async () => {
-    const user = userEvent.setup();
-    const { host } = seed();
-
-    // 只留 event + audience，交集为空。
-    await user.click(screen.getByRole('button', { name: '收到 RTM 事件' }));
-    await user.click(
-      within(screen.getByTestId('filter-role')).getByRole('button', { name: 'audience' }),
-    );
-
-    expect(rows()).toHaveLength(0);
-    expect(screen.getByText(/取消筛选即可恢复/)).toBeInTheDocument();
-    // store 一条没少
-    expect(host.store.getEntries()).toHaveLength(2);
   });
 });
 
@@ -512,11 +476,13 @@ describe('没有「已截断」提示', () => {
 });
 
 describe('行布局照抄 spec 的三列网格', () => {
-  it('.lab-trace 是 16px / 62px / 自适应 三列', () => {
+  it('.lab-trace 为完整 HH:MM:SS.mmm 时间保留 82px 轨道', () => {
     const block = stylesSource.match(/\.lab-trace \{([^}]*)\}/)?.[1] ?? '';
 
     expect(block).toContain('display: grid');
-    expect(block.replace(/\s+/g, ' ')).toContain('grid-template-columns: 16px 62px minmax(0, 1fr)');
+    expect(block.replace(/\s+/g, ' ')).toContain('grid-template-columns: 16px 82px minmax(0, 1fr)');
+    const time = stylesSource.match(/\.lab-trace__time \{([^}]*)\}/)?.[1] ?? '';
+    expect(time).toContain('white-space: nowrap');
   });
 
   it('每行按序渲染色点轨道、时间、正文三格', () => {
@@ -531,8 +497,15 @@ describe('行布局照抄 spec 的三列网格', () => {
     ]);
     // 正文首行是 uid badge + 名称（+ 耗时），次行是摘要。
     const body = children[2];
-    expect(body.querySelector('.lab-trace__head')?.textContent).toBe('host-aaartm.login12ms');
+    expect(body.querySelector('.lab-trace__head')?.textContent).toBe('APIhost-aaartm.login12ms');
     expect(body.querySelector('.lab-trace__summary')?.textContent).toBe('uid=host-aaa');
+  });
+
+  it('高精度 API 耗时最多显示到微秒对应的三位小数', () => {
+    const { host } = setup();
+    host.record({ name: 'rtm.publish', durationMs: 12.34567 });
+
+    expect(screen.getByText('12.346ms')).toBeTruthy();
   });
 
   it('失败条目带错误码与错误信息', () => {
@@ -615,10 +588,23 @@ describe('外部 store 订阅，不轮询', () => {
     // 只有一个列表容器（不是每端一列），且顺序按时间戳。
     expect(screen.getAllByRole('list')).toHaveLength(1);
     expect(rowTexts().map((text) => text.replace(/^[\d:.]+/, '').trim())).toEqual([
-      'host-aaahost-early',
-      'audience-bbbaudience-mid',
-      'host-aaahost-late',
+      'APIhost-aaahost-early',
+      '事件audience-bbbaudience-mid',
+      'APIhost-aaahost-late',
     ]);
+  });
+
+  it('页面 login 与角色 trace 共享 uid/seq 时仍使用不同 React key', () => {
+    const page = endpoint('user-1', 'page');
+    const host = endpoint('user-1', 'host');
+    render(<TimelinePanel sources={[page.source, host.source]} />);
+
+    page.record({ name: 'rtm.login', kind: 'api' });
+    host.record({ name: 'rtm.subscribe', kind: 'api' });
+
+    expect(rows()).toHaveLength(2);
+    expect(rowTexts().join(' ')).toContain('rtm.login');
+    expect(rowTexts().join(' ')).toContain('rtm.subscribe');
   });
 
   it('toTraceSource 把 RTM 单文件的方法名适配过来，不改单文件的命名', () => {

@@ -1,300 +1,587 @@
-/**
- * 语聊房场景测试。
- *
- * 这里锁的是**票 22 里那些看得见的约束**：两条常驻告警的存在与措辞、手机内区块顺序、
- * 身份条 badge 与时间线同色、卸载时两端都断开、StrictMode 重复挂载不泄漏连接。
- *
- * 顺序敏感的编排（先连房主再连听众、麦位激活由媒体结果驱动）在 `orchestrator.test.ts`
- * 里锁 —— 那部分不该被 `useEffect` 的调度细节缠住，所以刻意不在这里重复断言。
- */
-
-import { render, screen, within } from '@testing-library/react';
-import { StrictMode } from 'react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { VoiceRoomScene } from './VoiceRoomScene';
-import { createVoiceRoomFakes } from './testing';
-import { SEAT_COUNT } from './config';
-import { roleColor } from '../../shared/timeline/roleColors';
+import type { RtcHelper } from '../../shared/rtc';
+import type { TraceSource } from '../../shared/timeline/useMergedTraces';
+import type { AppRtmEventListeners, AppRoomRtmPort } from './app-rtm';
+import type { AppRtmSession } from './app-rtm';
+import { parseVoiceRoomUrl, VoiceRoomScene } from './VoiceRoomScene';
+import { encodeVoiceRoomUrlPayload, type VoiceRoomUrlPayload } from './voice-room-url';
+import source from './VoiceRoomScene.tsx?raw';
 
-const ENV = { configured: true, appId: 'test-app-id', source: 'window.__ENV__' } as const;
+const env = { configured: true, appId: 'test-app-id', source: 'window.__ENV__' } as const;
 
-/** 固定房间与 uid，断言身份条内容时不受随机推导影响。 */
-const SEARCH = '?room=room-fixed&uid.host=host-1&uid.audience=audience-1';
-
-function renderScene(options: { strict?: boolean; search?: string } = {}) {
-  const fakes = createVoiceRoomFakes();
-  const element = (
-    <VoiceRoomScene env={ENV} search={options.search ?? SEARCH} overrides={fakes.overrides} />
-  );
-  const result = render(options.strict ? <StrictMode>{element}</StrictMode> : element);
-  return { ...result, fakes };
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
-describe('常驻告警', () => {
-  it('渲染耳机告警 —— 两端都会真实播放音频', () => {
-    renderScene();
+function payload(): VoiceRoomUrlPayload {
+  return {
+    localStorage: {
+      'record-channel-list-20260818': {
+        roomId: 'voice-room-1', roomName: '邀请房间', hostUserId: 'host-1',
+        createdAt: Date.parse('2026-08-18T01:00:00.000Z'),
+        updatedAt: Date.parse('2026-08-18T01:00:00.000Z'), banUserIds: [], status: 'active',
+      },
+    },
+    role: 'audience',
+    pageUid: null,
+    nickname: null,
+  };
+}
 
-    expect(screen.getByText('请佩戴耳机')).toBeInTheDocument();
+function createSceneHarness(options: { holdLogin?: boolean; holdSubscribe?: boolean } = {}) {
+  const operations: string[] = [];
+  const login = deferred();
+  const subscribe = deferred();
+  let handlers: AppRtmEventListeners = {};
+  const port: AppRoomRtmPort = {
+    async subscribe() { operations.push('rtm:subscribe'); if (options.holdSubscribe) await subscribe.promise; },
+    async unsubscribe() { operations.push('rtm:unsubscribe'); },
+    async publish(_channelName, message, channelType) {
+      operations.push(`rtm:publish:${channelType}:${JSON.parse(message).type}`);
+    },
+    async setPresenceState(_roomId, state) {
+      operations.push(`presence:set:${state.displayName ?? ''}:${state.muted ?? ''}`);
+    },
+    async removePresenceState(_roomId, keys) {
+      operations.push(`presence:remove:${keys.join(',')}`);
+    },
+    async setRoomMetadata() {},
+  };
+  const session = {
+    userId: 'audience-1',
+    async login() { operations.push('rtm:login'); if (options.holdLogin) await login.promise; return port; },
+    async logout() { operations.push('rtm:logout'); },
+    getTraces: () => [],
+    subscribeTraces: () => () => undefined,
+    clearTraces() {},
+    getRoomPort: () => port,
+    bindRtmEvents(next: AppRtmEventListeners) {
+      handlers = next;
+      return () => { if (handlers === next) handlers = {}; };
+    },
+  } as unknown as AppRtmSession;
+  const rtc: RtcHelper = {
+    registerEvents() {},
+    async join() { operations.push('rtc:join'); },
+    async leave() { operations.push('rtc:leave'); },
+    async publishMicrophone() {},
+    async unpublishMicrophone() {},
+    async setMicrophoneMuted(muted) { operations.push(`rtc:mute:${muted}`); },
+    isMicrophoneCaptureHealthy: () => true,
+    async publishCamera() {},
+    async unpublishCamera() {},
+    async setCameraMuted() {},
+    getLocalVideoTrack: () => undefined,
+  };
+  return {
+    operations,
+    resolveLogin: login.resolve,
+    resolveSubscribe: subscribe.resolve,
+    emitPresence(event: Parameters<NonNullable<AppRtmEventListeners['presence']>>[0]) {
+      handlers.presence?.(event);
+    },
+    emitStorage(event: Parameters<NonNullable<AppRtmEventListeners['storage']>>[0]) {
+      handlers.storage?.(event);
+    },
+    emitMessage(event: Parameters<NonNullable<AppRtmEventListeners['message']>>[0]) {
+      handlers.message?.(event);
+    },
+    overrides: {
+      createAppRtmSession: () => session,
+      createRtc: () => rtc,
+    },
+  };
+}
+
+describe('语聊房单端入口', () => {
+  it('从唯一 data 参数解码完整 payload', () => {
+    expect(parseVoiceRoomUrl(`?data=${encodeVoiceRoomUrlPayload(payload())}`)).toEqual(payload());
   });
 
-  it('渲染生产边界告警，说明治理动作不构成信任边界', () => {
-    renderScene();
+  it('登录成功前只显示 booting，不渲染角色入口', async () => {
+    const harness = createSceneHarness({ holdLogin: true });
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
 
-    const warning = screen.getByTestId('boundary-warning');
-    expect(warning.textContent).toContain('不构成信任边界');
+    expect(screen.getByTestId('voice-room-booting')).toBeInTheDocument();
+    expect(screen.queryByTestId('voice-room-entry')).not.toBeInTheDocument();
+    await act(async () => harness.resolveLogin());
+    expect(await screen.findByTestId('voice-room-entry')).toBeInTheDocument();
   });
 
-  it('生产边界告警不含「已强制执行」这类表述', () => {
-    renderScene();
+  it('choose 主页同时提供 Host 创建和 Audience 邀请链接入口', async () => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
 
-    // 踢出、封禁、强制麦控都是客户端协作行为：被治理端自己收到命令、自己执行。
-    // 把它们说成已强制执行的权限控制会误导拷走这套代码的人。
-    const warning = screen.getByTestId('boundary-warning');
-    expect(warning.textContent).not.toMatch(/已强制执行|强制执行|已鉴权|服务端校验通过/);
+    expect(screen.getByText('创建一间语聊房，或通过邀请链接加入一场正在发生的对话。')).toBeInTheDocument();
+    expect(screen.queryByText(/RTM 身份/)).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('房间标题'), '新房间');
+
+    expect(screen.getByLabelText('邀请链接')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '创建并进入' })).toBeEnabled();
   });
 
-  it('两条告警都常驻页面，不是可折叠的小字', () => {
-    renderScene();
+  it('订阅开始时房间 UI 已挂载，并由统一 loading 蒙层阻断', async () => {
+    const harness = createSceneHarness({ holdSubscribe: true });
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), '新房间');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
 
-    // role="note" 而非藏在 details/summary 里
-    expect(screen.getAllByRole('note')).toHaveLength(2);
-  });
-});
-
-describe('两台手机并排', () => {
-  it('渲染房主视角与听众视角两台手机', () => {
-    renderScene();
-
-    expect(screen.getByTestId('vr-host')).toBeInTheDocument();
-    expect(screen.getByTestId('vr-audience')).toBeInTheDocument();
+    expect(screen.getByLabelText('房主语聊房')).toBeInTheDocument();
+    expect(screen.getByTestId('voice-room-loading-overlay')).toHaveTextContent('正在加载房间…');
+    await act(async () => harness.resolveSubscribe());
+    expect(screen.queryByTestId('voice-room-loading-overlay')).not.toBeInTheDocument();
   });
 
-  it('每台手机有独立的可访问名称，读者能分清视角', () => {
-    renderScene();
+  it('公屏提供普通、礼物和爱心三种消息入口', async () => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), '互动房间');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    await screen.findByLabelText('房主语聊房');
 
-    expect(screen.getByRole('region', { name: '房主视角' })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: '听众视角' })).toBeInTheDocument();
-  });
-});
+    await user.click(screen.getByRole('button', { name: '发送礼物消息' }));
+    await user.click(screen.getByRole('button', { name: '发送爱心消息' }));
 
-describe('身份条', () => {
-  it('每台手机上方一个身份条，含 uid badge 与视角说明', () => {
-    renderScene();
-
-    expect(screen.getByTestId('identity-badge-host').textContent).toBe('host-1');
-    expect(screen.getByTestId('identity-badge-audience').textContent).toBe('audience-1');
-    expect(screen.getByText('房主视角')).toBeInTheDocument();
-    expect(screen.getByText('听众视角')).toBeInTheDocument();
-  });
-
-  it('badge 颜色取自 roleColor —— 与时间线里的 badge 同源同色', () => {
-    renderScene();
-
-    // 时间线条目 badge 与这里都调 `roleColor`，所以「对得上」是靠共用来源保证的，
-    // 不是靠两处各写一遍同样的颜色值。
-    const host = screen.getByTestId('identity-badge-host');
-    expect(host.style.color).toBe(roleColor('host').accent);
-    expect(host.style.background).toBe(roleColor('host').soft);
-
-    const audience = screen.getByTestId('identity-badge-audience');
-    expect(audience.style.color).toBe(roleColor('audience').accent);
-    expect(audience.style.background).toBe(roleColor('audience').soft);
+    expect(harness.operations).toContain('rtm:publish:MESSAGE:gift.sent');
+    expect(harness.operations).toContain('rtm:publish:MESSAGE:emoji.reaction');
+    expect(screen.getByLabelText('聊天内容')).toBeInTheDocument();
+    expect(source).toContain('data-interaction-type={item.type}');
+    expect(source).toContain('送出礼物');
+    expect(source).toContain('送出爱心');
+    expect(source).toContain('feed.scrollTop = feed.scrollHeight');
+    expect(source).toContain('}, [view.interactions]);');
+    expect(source).toContain('request.remainingSeconds');
   });
 
-  it('两端 badge 颜色不同 —— 读者靠颜色而不是文字判断来自哪一端', () => {
-    renderScene();
+  it('Emoji 选择器把 Unicode Emoji 插入输入框且不会立即发送', async () => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), 'Emoji 房间');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    const room = await screen.findByLabelText('房主语聊房');
+    expect(within(room).getByRole('button', { name: '暂时离开' })).toBeInTheDocument();
+    expect(within(room).getByRole('button', { name: '解散房间' })).toBeInTheDocument();
+    const chatInput = within(room).getByLabelText('聊天内容');
+    fireEvent.change(chatInput, { target: { value: 'AB' } });
+    (chatInput as HTMLInputElement).setSelectionRange(1, 1);
 
-    expect(screen.getByTestId('identity-badge-host').style.color).not.toBe(
-      screen.getByTestId('identity-badge-audience').style.color,
-    );
+    await user.click(within(room).getByRole('button', { name: '打开 Emoji 选择器' }));
+    const picker = within(room).getByRole('dialog', { name: 'Emoji 选择器' });
+    await user.click(within(picker).getByRole('button', { name: '插入 😀' }));
+
+    expect(chatInput).toHaveValue('A😀B');
+    expect(harness.operations).not.toContain('rtm:publish:MESSAGE:chat.message');
+
+    await user.click(within(room).getByRole('button', { name: '发送聊天' }));
+    expect(harness.operations).toContain('rtm:publish:MESSAGE:chat.message');
+    expect(within(room).queryByRole('dialog', { name: 'Emoji 选择器' })).not.toBeInTheDocument();
+
+    await user.click(within(room).getByRole('button', { name: '打开 Emoji 选择器' }));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(within(room).queryByRole('dialog', { name: 'Emoji 选择器' })).not.toBeInTheDocument();
+
+    await user.click(within(room).getByRole('button', { name: '打开 Emoji 选择器' }));
+    await user.click(within(room).getByRole('button', { name: '关闭 Emoji 选择器' }));
+    expect(within(room).queryByRole('dialog', { name: 'Emoji 选择器' })).not.toBeInTheDocument();
   });
-});
 
-describe('手机内区块顺序', () => {
-  it('自上而下：状态栏、房间头部、麦位网格、角色面板、成员条、公屏、底部操作条', () => {
-    renderScene();
+  it('Host 在麦位上可闭麦，并在收到上麦申请时显示 toast', async () => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), 'Host 麦克风房间');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    const room = await screen.findByLabelText('房主语聊房');
+    const currentPayload = parseVoiceRoomUrl(window.location.search)!;
+    const roomId = Object.values(currentPayload.localStorage)[0].roomId;
+    act(() => harness.emitStorage({
+      timestamp: 1,
+      channelName: roomId,
+      channelType: 'MESSAGE',
+      storageType: 'CHANNEL',
+      eventType: 'SNAPSHOT',
+      publisher: '',
+      data: {
+        majorRevision: 1,
+        totalCount: 4,
+        metadata: {
+          hostUserId: { value: 'audience-1' },
+          announcement: { value: '' },
+          seats: { value: JSON.stringify({
+            'seat-0': { seatId: 'seat-0', userId: 'audience-1', displayName: 'Host' },
+          }) },
+          forcedMutedUserIds: { value: '[]' },
+        },
+      },
+    } as never));
+    await vi.waitFor(() => expect(within(room).getByRole('button', { name: '闭麦' })).toBeInTheDocument());
+    await user.click(within(room).getByRole('button', { name: '闭麦' }));
+    expect(harness.operations).toContain('presence:set::true');
+    expect(harness.operations).toContain('rtc:mute:true');
 
-    const phone = screen.getByTestId('vr-host');
-    // 取最具体的那个类名：角色面板是 `vr-block vr-role-panel`，`vr-block` 是通用外观类，
-    // 断言它等于没断言 —— 任何区块都可能带上。
-    const blocks = Array.from(phone.children).map((node) => {
-      const names = node.className.split(' ').filter((name) => name !== 'vr-block');
-      return names[0];
+    act(() => harness.emitPresence({
+      timestamp: 2,
+      channelName: roomId,
+      channelType: 'MESSAGE',
+      eventType: 'REMOTE_JOIN',
+      publisher: 'audience-2',
+      stateChanged: { displayName: 'Emma_301' },
+    } as never));
+    const now = Date.now();
+    act(() => harness.emitMessage({
+      timestamp: now,
+      channelName: 'audience-1',
+      channelType: 'USER',
+      publisher: 'audience-2',
+      messageType: 'STRING',
+      message: JSON.stringify({
+        schemaVersion: 1,
+        messageId: 'seat-request-toast-ui',
+        type: 'seat.request',
+        roomId,
+        targetUserId: 'audience-1',
+        sentAt: now,
+        expiresAt: now + 15_000,
+        payload: { requestId: 'request-1', seatId: 'seat-1' },
+      }),
+    } as never));
+
+    const toast = await within(room).findByText('Emma_301 申请 2 号麦位');
+    expect(toast.closest('.vr-toast-message')).toHaveClass('vr-room-toast');
+  });
+
+  it('角色离房后仍保留页面生命周期内已经出现的数据流 source', async () => {
+    const harness = createSceneHarness();
+    const publishedSources: TraceSource[][] = [];
+    const user = userEvent.setup();
+    render(<VoiceRoomScene
+      env={env}
+      overrides={harness.overrides}
+      search=""
+      onTraceSources={(sources) => publishedSources.push([...sources])}
+    />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), '保留数据流房间');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    const room = await screen.findByLabelText('房主语聊房');
+    await vi.waitFor(() => expect(publishedSources.at(-1)).toHaveLength(2));
+
+    await user.click(within(room).getByRole('button', { name: '暂时离开' }));
+
+    await vi.waitFor(() => expect(screen.getByTestId('voice-room-entry')).toBeInTheDocument());
+    expect(publishedSources.at(-1)).toHaveLength(2);
+    expect(publishedSources).not.toContainEqual([]);
+  });
+
+  it('Audience 不渲染右侧席位 panel，上麦操作位于消息栏最右侧并展示麦克风异常', async () => {
+    const harness = createSceneHarness();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search={`?data=${encodeVoiceRoomUrlPayload(payload())}`} />);
+    const room = await screen.findByLabelText('听众语聊房');
+
+    expect(within(room).queryByLabelText('我的上麦')).not.toBeInTheDocument();
+    expect(within(room).queryByText('我的语音席位')).not.toBeInTheDocument();
+    const composer = within(room).getByLabelText('聊天内容').closest('form')!;
+    const seatAction = within(composer).getByRole('button', { name: '申请上麦' });
+    expect(composer.lastElementChild).toBe(seatAction);
+
+    await vi.waitFor(() => expect(parseVoiceRoomUrl(window.location.search)?.nickname).toMatch(/_\d{3}$/u));
+    const currentPayload = parseVoiceRoomUrl(window.location.search)!;
+    const roomId = Object.values(currentPayload.localStorage)[0].roomId;
+    act(() => harness.emitStorage({
+      timestamp: 2,
+      channelName: roomId,
+      channelType: 'MESSAGE',
+      storageType: 'CHANNEL',
+      eventType: 'UPDATE',
+      publisher: 'host-1',
+      data: {
+        majorRevision: 2,
+        totalCount: 4,
+        metadata: {
+          hostUserId: { value: 'host-1' },
+          announcement: { value: '' },
+          seats: { value: JSON.stringify({
+            'seat-0': { seatId: 'seat-0', userId: 'host-1', displayName: 'Host' },
+            'seat-1': { seatId: 'seat-1', userId: 'audience-1', displayName: currentPayload.nickname },
+          }) },
+          forcedMutedUserIds: { value: '[]' },
+        },
+      },
+    } as never));
+    await vi.waitFor(() => expect(within(composer).getByRole('button', { name: '闭麦' })).toBeInTheDocument());
+
+    act(() => harness.emitPresence({
+      timestamp: 3,
+      channelName: roomId,
+      channelType: 'MESSAGE',
+      eventType: 'REMOTE_STATE_CHANGED',
+      publisher: 'audience-1',
+      stateChanged: { microphoneError: 'true' },
+    } as never));
+    expect(within(room).getByText('麦克风异常')).toBeInTheDocument();
+    expect(within(room).getByTitle('麦克风设备异常')).toBeInTheDocument();
+
+    await userEvent.setup().click(within(composer).getByRole('button', { name: '闭麦' }));
+    expect(harness.operations).toContain('presence:set::true');
+    expect(harness.operations).toContain('rtc:mute:true');
+    expect(composer.lastElementChild).toHaveTextContent('主动下麦');
+  });
+
+  it('收到上麦邀请时公屏回到顶部，后续新消息到达时再滚到底部', async () => {
+    const harness = createSceneHarness();
+    render(<VoiceRoomScene
+      env={env}
+      overrides={harness.overrides}
+      search={`?data=${encodeVoiceRoomUrlPayload(payload())}`}
+    />);
+    const room = await screen.findByLabelText('听众语聊房');
+    const feed = within(room).getByTestId('voice-room-chat-feed');
+    Object.defineProperty(feed, 'scrollHeight', { configurable: true, value: 600 });
+    feed.scrollTop = 320;
+    const now = Date.now();
+
+    act(() => harness.emitMessage({
+      timestamp: now,
+      channelName: 'audience-1',
+      channelType: 'USER',
+      publisher: 'host-1',
+      messageType: 'STRING',
+      message: JSON.stringify({
+        schemaVersion: 1,
+        messageId: 'seat-invitation-scroll',
+        type: 'seat.invited',
+        roomId: 'voice-room-1',
+        targetUserId: 'audience-1',
+        sentAt: now,
+        expiresAt: now + 15_000,
+        payload: { invitationId: 'invitation-scroll', seatId: 'seat-1' },
+      }),
+    } as never));
+
+    expect(await within(room).findByText('房主邀请你上 2 号麦')).toBeInTheDocument();
+    expect(feed.scrollTop).toBe(0);
+
+    act(() => harness.emitMessage({
+      timestamp: now + 1,
+      channelName: 'voice-room-1',
+      channelType: 'MESSAGE',
+      publisher: 'host-1',
+      messageType: 'STRING',
+      message: JSON.stringify({
+        schemaVersion: 1,
+        messageId: 'chat-after-invitation',
+        type: 'chat.message',
+        roomId: 'voice-room-1',
+        sentAt: now + 1,
+        expiresAt: now + 15_000,
+        payload: { value: '欢迎上麦' },
+      }),
+    } as never));
+
+    await vi.waitFor(() => expect(within(room).getByText('欢迎上麦')).toBeInTheDocument());
+    expect(feed.scrollTop).toBe(600);
+  });
+
+  it('复制邀请后在房间内显示 toast，3 秒后消失', async () => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
     });
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), 'Toast 房间');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    const room = await screen.findByLabelText('房主语聊房');
 
-    expect(blocks).toEqual([
-      'vr-status-bar',
-      'vr-room-header',
-      'vr-seats',
-      'vr-role-panel',
-      'vr-member-bar',
-      'vr-chat',
-      'vr-action-bar',
-    ]);
+    vi.useFakeTimers();
+    fireEvent.click(within(room).getByRole('button', { name: '复制观众邀请链接' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith(expect.stringMatching(
+      /^http:\/\/localhost(?::\d+)?\/social\/voice-room\?data=[A-Za-z0-9_-]+$/,
+    ));
+    const toast = within(room).getByText('已复制完整邀请链接').closest('.vr-toast-message')!;
+    expect(toast).toHaveClass('vr-room-toast');
+    expect(toast.closest('.vr-toast-viewport')).toHaveClass('vr-toast-viewport--header');
+
+    act(() => vi.advanceTimersByTime(3_000));
+    expect(within(room).queryByText('已复制完整邀请链接')).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 
-  it('听众端区块顺序与房主端一致 —— 只有区块内容不同', () => {
-    renderScene();
+  it('局域网 HTTP 没有 Clipboard API 时通过兼容路径复制短邀请内容', async () => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    let fallbackText = "";
+    const execCommand = vi.fn(() => {
+      fallbackText = (document.querySelector('textarea[aria-hidden="true"]') as HTMLTextAreaElement)?.value ?? "";
+      return true;
+    });
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand });
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), 'LAN 房间');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    const room = await screen.findByLabelText('房主语聊房');
 
-    const order = (testId: string) =>
-      Array.from(screen.getByTestId(testId).children).map((node) => node.className.split(' ')[0]);
+    await user.click(within(room).getByRole('button', { name: '复制观众邀请链接' }));
 
-    expect(order('vr-audience')).toEqual(order('vr-host'));
+    await vi.waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'));
+    expect(fallbackText).toMatch(/^data=[A-Za-z0-9_-]+$/);
+    expect(within(room).getByText('已复制短邀请内容')).toBeInTheDocument();
   });
 
-  it('底部操作条是公屏的兄弟节点且排在最后 —— 常驻手机框内，不随公屏滚走', () => {
-    renderScene();
+  it('Audience 输入短邀请内容后可以加入房间', async () => {
+    const harness = createSceneHarness();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
 
-    const phone = screen.getByTestId('vr-host');
-    const blocks = Array.from(phone.children);
-    const chat = within(phone).getByTestId('chat-feed');
-    const bar = blocks[blocks.length - 1];
+    fireEvent.change(screen.getByLabelText('邀请链接'), {
+      target: { value: `data=${encodeVoiceRoomUrlPayload(payload())}` },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '加入房间' }));
 
-    expect(bar.className).toContain('vr-action-bar');
-    expect(chat.contains(bar)).toBe(false);
+    expect(await screen.findByLabelText('听众语聊房')).toBeInTheDocument();
   });
 
-  it('麦位网格按配置的麦位数渲染', () => {
-    renderScene();
+  it('Host 用 Presence nickname 展示和选择听众，不暴露 UID', async () => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), '昵称房间');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    await screen.findByLabelText('房主语聊房');
+    const currentPayload = parseVoiceRoomUrl(window.location.search)!;
+    const roomId = Object.values(currentPayload.localStorage)[0].roomId;
 
-    const grid = within(screen.getByTestId('vr-host')).getByTestId('seat-1').parentElement!;
-    expect(grid.children).toHaveLength(SEAT_COUNT);
+    act(() => harness.emitPresence({
+      timestamp: 1,
+      channelName: roomId,
+      channelType: 'MESSAGE',
+      eventType: 'SNAPSHOT',
+      publisher: '',
+      snapshot: [
+        { userId: 'audience-1', states: { displayName: 'Host' }, statesCount: 1 },
+        { userId: 'audience-2', states: { displayName: 'Alice_037' }, statesCount: 1 },
+      ],
+      interval: null,
+    } as never));
+    act(() => harness.emitStorage({
+      timestamp: 2,
+      channelName: roomId,
+      channelType: 'MESSAGE',
+      storageType: 'CHANNEL',
+      eventType: 'UPDATE',
+      publisher: 'audience-1',
+      data: {
+        majorRevision: 2,
+        totalCount: 4,
+        metadata: {
+          hostUserId: { value: 'audience-1' },
+          announcement: { value: '' },
+          seats: { value: JSON.stringify({
+            'seat-0': { seatId: 'seat-0', userId: 'audience-1', displayName: 'StorageHost' },
+            'seat-1': { seatId: 'seat-1', userId: 'audience-2', displayName: 'Storage_999' },
+          }) },
+          forcedMutedUserIds: { value: '[]' },
+        },
+      },
+    } as never));
+
+    await user.click(screen.getByRole('combobox', { name: '选择邀请听众' }));
+    expect(screen.getAllByText('Alice_037').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole('option', { name: 'Alice_037' })).toBeInTheDocument();
+    expect(screen.queryByText('Storage_999')).not.toBeInTheDocument();
+    await user.type(screen.getByRole('combobox', { name: '选择邀请听众' }), 'Alice');
+    expect(screen.getByRole('option', { name: 'Alice_037' })).toBeInTheDocument();
+    expect(screen.queryByText('audience-2')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/UID/i)).not.toBeInTheDocument();
   });
-});
 
-describe('生命周期', () => {
-  it('挂载即连接 —— 零表单，点 tab 直接进房', () => {
-    const { fakes } = renderScene();
+  it('直达 Audience URL 在平台登录完成前不闪现 choose', () => {
+    const harness = createSceneHarness({ holdLogin: true });
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search={`?data=${encodeVoiceRoomUrlPayload(payload())}`} />);
 
-    // 客户端已被创建（handlers 已交出），说明 start() 跑了。
-    expect(() => fakes.host()).not.toThrow();
+    expect(screen.getByTestId('voice-room-booting')).toBeInTheDocument();
+    expect(screen.queryByTestId('voice-room-entry')).not.toBeInTheDocument();
   });
 
-  it('卸载时两端都断开', async () => {
-    const fakes = createVoiceRoomFakes();
-    const hostDisconnect = vi.fn(async () => undefined);
-    const audienceDisconnect = vi.fn(async () => undefined);
-    const createClients: typeof fakes.overrides.createClients = (config) => {
-      const clients = fakes.overrides.createClients(config);
-      return {
-        host: { ...clients.host, disconnect: hostDisconnect },
-        audience: { ...clients.audience, disconnect: audienceDisconnect },
-      };
+  it('Audience 刷新 active 房间时不校验 Host，Presence 中没有 Host 则展示暂时离开', async () => {
+    const harness = createSceneHarness();
+    const refreshPayload: VoiceRoomUrlPayload = {
+      ...payload(),
+      pageUid: 'audience-1',
+      nickname: 'Alice_037',
     };
 
-    const { unmount } = render(
-      <VoiceRoomScene
-        env={ENV}
-        search={SEARCH}
-        overrides={{ createClients, createRtc: fakes.overrides.createRtc }}
-      />,
-    );
-    unmount();
-    await Promise.resolve();
+    render(<VoiceRoomScene
+      env={env}
+      overrides={harness.overrides}
+      search={`?data=${encodeVoiceRoomUrlPayload(refreshPayload)}`}
+    />);
 
-    expect(hostDisconnect).toHaveBeenCalled();
-    expect(audienceDisconnect).toHaveBeenCalled();
+    const room = await screen.findByLabelText('听众语聊房');
+    act(() => harness.emitStorage({
+      timestamp: 1,
+      channelName: 'voice-room-1',
+      channelType: 'MESSAGE',
+      storageType: 'CHANNEL',
+      eventType: 'SNAPSHOT',
+      publisher: '',
+      data: {
+        majorRevision: 1,
+        totalCount: 4,
+        metadata: {
+          hostUserId: { value: 'host-1' },
+          announcement: { value: '' },
+          seats: { value: JSON.stringify({
+            'seat-0': { seatId: 'seat-0', userId: 'host-1', displayName: 'Host' },
+          }) },
+          forcedMutedUserIds: { value: '[]' },
+        },
+      },
+    } as never));
+    act(() => harness.emitPresence({
+      timestamp: 2,
+      channelName: 'voice-room-1',
+      channelType: 'MESSAGE',
+      eventType: 'SNAPSHOT',
+      publisher: '',
+      snapshot: [{ userId: 'audience-1', states: { displayName: 'Alice_037' }, statesCount: 1 }],
+      interval: null,
+    } as never));
+
+    expect(within(room).getByText('暂时离开…')).toBeInTheDocument();
+    expect(within(room).getByTitle('房主暂时离开')).toBeInTheDocument();
+    expect(within(room).getByRole('button', { name: '申请上麦' })).toBeDisabled();
+    expect(within(room).getByTitle('房主暂时离开，无法处理上麦申请')).toBeInTheDocument();
+    expect(within(room).getByText('host-1')).toBeInTheDocument();
+    expect(within(room).queryByText('Host')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('voice-room-ended')).not.toBeInTheDocument();
   });
 
-  it('StrictMode 下重复挂载卸载不泄漏连接：断开次数不少于连接次数', async () => {
-    const fakes = createVoiceRoomFakes();
-    let connects = 0;
-    let disconnects = 0;
-    const createClients: typeof fakes.overrides.createClients = (config) => {
-      const clients = fakes.overrides.createClients(config);
-      const counted = {
-        connect: async () => void connects++,
-        disconnect: async () => void disconnects++,
-      };
-      return {
-        host: { ...clients.host, ...counted },
-        audience: { ...clients.audience, ...counted },
-      };
-    };
-
-    const { unmount } = render(
-      <StrictMode>
-        <VoiceRoomScene
-          env={ENV}
-          search={SEARCH}
-          overrides={{ createClients, createRtc: fakes.overrides.createRtc }}
-        />
-      </StrictMode>,
-    );
-    // 让 StrictMode 的「挂载 → 卸载 → 再挂载」全部走完
-    await Promise.resolve();
-    await Promise.resolve();
-    unmount();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // 具体次数取决于 React 的调度，不硬编码；关键是没有「连上了却没断开」的残留。
-    expect(connects).toBeGreaterThan(0);
-    expect(disconnects).toBeGreaterThanOrEqual(connects);
-  });
-
-  it('StrictMode 下渲染出的手机不重复 —— 每台只有一个', () => {
-    renderScene({ strict: true });
-
-    expect(screen.getAllByTestId('vr-host')).toHaveLength(1);
-    expect(screen.getAllByTestId('vr-audience')).toHaveLength(1);
-  });
-});
-
-describe('时间线来源', () => {
-  it('把两端客户端作为 trace 来源交给外壳', () => {
-    const fakes = createVoiceRoomFakes();
-    const onTraceSources = vi.fn();
-
-    render(
-      <VoiceRoomScene
-        env={ENV}
-        search={SEARCH}
-        overrides={fakes.overrides}
-        onTraceSources={onTraceSources}
-      />,
-    );
-
-    expect(onTraceSources.mock.calls[0][0]).toHaveLength(2);
-  });
-
-  it('卸载时交回空来源，避免外壳继续订阅已断开的客户端', () => {
-    const fakes = createVoiceRoomFakes();
-    const onTraceSources = vi.fn();
-
-    const { unmount } = render(
-      <VoiceRoomScene
-        env={ENV}
-        search={SEARCH}
-        overrides={fakes.overrides}
-        onTraceSources={onTraceSources}
-      />,
-    );
-    unmount();
-
-    expect(onTraceSources.mock.calls.at(-1)?.[0]).toEqual([]);
-  });
-});
-
-describe('失败路径的可见反馈', () => {
-  it('客户端报错后在对应那台手机上显示错误', async () => {
-    const { fakes } = renderScene();
-
-    fakes.audience().error('上麦失败：设备被占用');
-    await screen.findByTestId('error-audience');
-
-    expect(screen.getByTestId('error-audience').textContent).toContain('设备被占用');
-    // 只影响报错那一端
-    expect(screen.queryByTestId('error-host')).not.toBeInTheDocument();
-  });
-
-  it('被踢出后显示退出原因', async () => {
-    const { fakes } = renderScene();
-
-    fakes.audience().exit('kicked');
-    await screen.findByTestId('exit-audience');
-
-    expect(screen.getByTestId('exit-audience').textContent).toContain('踢出');
+  it('麦位展示由归属和强制静音派生，不再依赖 joining 存储状态', () => {
+    expect(source).toContain('data-state={seat.status}');
+    expect(source).toContain('forcedMuted');
+    expect(source).not.toContain('seat.status === "joining"');
   });
 });

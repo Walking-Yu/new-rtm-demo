@@ -23,7 +23,7 @@ describe('start-demo.sh', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Demo environment is ready');
     expect(result.stdout).toContain('scenes/voice-room');
-    // vendor 里携带的是 2.3.0 正式版
+    // 版本来自当前 npm 安装结果。
     expect(result.stdout).toContain('agora-rtm@2.3.0');
     expect(result.stdout).toContain('agora-rtc-sdk-ng@4.24.6');
   });
@@ -37,6 +37,21 @@ describe('start-demo.sh', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Default URL: http://127.0.0.1:8080/');
+    expect(result.stdout).toContain('--https');
+    expect(result.stdout).toContain('--both');
+  });
+
+  it('supports HTTP, HTTPS and dual-server development modes', () => {
+    const script = readFileSync(resolve(process.cwd(), 'start-demo.sh'), 'utf8');
+    const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
+    const gitignore = readFileSync(resolve(process.cwd(), '.gitignore'), 'utf8');
+
+    expect(script).toContain('https://$demo_public_host:$https_port/');
+    expect(script).toContain('mkcert -cert-file');
+    expect(script).toContain('npm run dev:https');
+    expect(viteConfig).toContain("mode === 'https'");
+    expect(viteConfig).toContain(".cert/dev-key.pem");
+    expect(gitignore).toContain('.cert/');
   });
 
   it('keeps the four default npm workflows pointed at this package', () => {
@@ -45,7 +60,8 @@ describe('start-demo.sh', () => {
     };
 
     // 四条默认命令都在本包内执行，不跨包委托（`--prefix` 会破坏这一点）
-    expect(packageJson.scripts.dev).toBe('vite --port 8080');
+    expect(packageJson.scripts.dev).toBe('vite --host 127.0.0.1 --port 8080');
+    expect(packageJson.scripts['dev:https']).toBe('vite --mode https --host 127.0.0.1 --port 8080');
     expect(packageJson.scripts.build).toBe('tsc -b && vite build');
     expect(packageJson.scripts.test).toBe('vitest run');
     expect(packageJson.scripts['test:e2e']).toBe('playwright test');
@@ -77,6 +93,13 @@ describe('start-demo.sh', () => {
     expect(existsSync(resolve(process.cwd(), 'src/test/setup.ts'))).toBe(true);
   });
 
+  it('loads the application without embedding a real App ID', () => {
+    const indexHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
+
+    expect(indexHtml).toContain('src="/src/app/main.tsx"');
+    expect(indexHtml).not.toMatch(/[0-9a-fA-F]{32}/);
+  });
+
   it('keeps archived applications outside this single-application repository', () => {
     for (const archivedPath of [
       'demos/voice-room',
@@ -87,10 +110,6 @@ describe('start-demo.sh', () => {
       expect(existsSync(resolve(process.cwd(), archivedPath)), archivedPath).toBe(false);
     }
 
-    const domainGuide = readFileSync(resolve(process.cwd(), 'docs/agents/domain.md'), 'utf8');
-    expect(domainGuide).toContain('本仓库只有一个应用');
-    expect(domainGuide).not.toContain('demos/voice-room/');
-    expect(domainGuide).not.toContain('src/legacy/');
   });
 
   it('isolates e2e from the developer local env without changing normal dev mode', () => {

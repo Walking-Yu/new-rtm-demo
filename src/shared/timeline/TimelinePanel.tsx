@@ -21,7 +21,8 @@
  * 环形缓冲超限**静默**丢弃最旧的，面板不显示任何截断提示（见票 16 与 spec）。
  */
 
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Activity, ChevronsRight, Eraser, RadioTower, Unplug } from 'lucide-react';
 
 import { collectValues, filterTraces, type TraceFilter } from './filterTraces';
 import { formatTraceTime } from './formatTraceTime';
@@ -36,6 +37,12 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 const NO_FILTER: TraceFilter = {};
+
+/** Keeps high-resolution durations readable without changing the stored value. */
+function formatDurationMs(durationMs: number): string {
+  const rounded = Math.round(durationMs * 1_000) / 1_000;
+  return `${rounded}ms`;
+}
 
 export interface TimelinePanelProps {
   /** 各端的 trace 来源。多端顺序不影响结果 —— 归并按时间戳排。 */
@@ -93,7 +100,7 @@ function FilterRow({
   );
 }
 
-/** 单条时间线条目。行布局是三列网格：色点轨道 16px、时间 62px、正文自适应。 */
+/** 单条时间线条目。行布局是三列网格：色点轨道 16px、时间 82px、正文自适应。 */
 function TraceRow({ entry }: { entry: TraceEntry }) {
   const failed = entry.errorCode !== undefined || entry.errorMessage !== undefined;
 
@@ -113,7 +120,9 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
 
       <div className="lab-trace__body">
         <div className="lab-trace__head">
-          {/* uid badge 颜色按角色固定，与主区身份条同色（同一处配色来源）。 */}
+          <span className="lab-trace__tag" data-kind={entry.kind}>{entry.kind === 'api' ? 'API' : '事件'}</span>
+          {entry.eventTag && <span className="lab-trace__tag" data-kind="event-type">{entry.eventTag}</span>}
+          {/* 保留角色配色来源供现有 trace 数据兼容；UI 通过 CSS 隐藏技术 UID。 */}
           <span
             className="lab-uid-badge"
             data-role={entry.role}
@@ -128,7 +137,7 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
           <span className="lab-trace__name">{entry.name}</span>
           {/* 耗时仅 api 条目有。 */}
           {entry.durationMs !== undefined && (
-            <span className="lab-trace__duration">{entry.durationMs}ms</span>
+            <span className="lab-trace__duration">{formatDurationMs(entry.durationMs)}</span>
           )}
         </div>
         {entry.summary && <div className="lab-trace__summary">{entry.summary}</div>}
@@ -152,29 +161,33 @@ export function TimelinePanel({
   // 外部 store 订阅：**API 被调用的瞬间节点就出现**，不轮询、不做整数组 diff。
   const entries = useMergedTraces(sources);
   const [filter, setFilter] = useState<TraceFilter>(NO_FILTER);
+  const [showLinkState, setShowLinkState] = useState(true);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
-  // 选项从**全量**条目算，不从筛选结果算 —— 否则选了一个维度后其他维度的
-  // 选项会跟着消失，用户就回不去了。
+  // 类型选项从全量条目算，不从筛选结果算，保证取消某个类型后能立即恢复。
   const kinds = useMemo(() => collectValues(entries, 'kind'), [entries]);
-  const roles = useMemo(() => collectValues(entries, 'role'), [entries]);
-  const uids = useMemo(() => collectValues(entries, 'uid'), [entries]);
-  const visible = useMemo(() => filterTraces(entries, filter), [entries, filter]);
+  const visible = useMemo(
+    () => filterTraces(entries, filter).filter((entry) => showLinkState || entry.name !== 'linkState'),
+    [entries, filter, showLinkState],
+  );
 
-  const filtering =
-    (filter.kinds?.length ?? 0) > 0 ||
-    (filter.roles?.length ?? 0) > 0 ||
-    (filter.uids?.length ?? 0) > 0;
+  const filtering = (filter.kinds?.length ?? 0) > 0;
+
+  // 新的 RTM 调用或事件进入时，始终把时间线定位到最新一项。
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (body) body.scrollTop = body.scrollHeight;
+  }, [visible]);
 
   /** 多选：已选则移除，未选则加入。 */
-  function toggle(key: keyof TraceFilter) {
-    return (value: string) =>
-      setFilter((current) => {
-        const list = current[key] ?? [];
-        const next = list.includes(value)
-          ? list.filter((item) => item !== value)
-          : [...list, value];
-        return { ...current, [key]: next };
-      });
+  function toggleKind(value: string) {
+    setFilter((current) => {
+      const kinds = current.kinds ?? [];
+      const next = kinds.includes(value)
+        ? kinds.filter((item) => item !== value)
+        : [...kinds, value];
+      return { kinds: next };
+    });
   }
 
   if (collapsed) {
@@ -187,7 +200,7 @@ export function TimelinePanel({
           aria-expanded={false}
           data-testid="timeline-toggle"
         >
-          <span className="lab-timeline__collapse-text">时间线</span>
+          <span className="lab-timeline__collapse-text">数据流时间线</span>
           {/* 折叠态显示条目计数，让人知道里面还在攒东西。 */}
           <span className="lab-timeline__count" data-testid="timeline-count">
             {entries.length}
@@ -200,7 +213,49 @@ export function TimelinePanel({
   return (
     <aside className="lab-timeline" aria-label="时间线">
       <div className="lab-timeline__header">
-        <span className="lab-timeline__title">时间线</span>
+        <div className="lab-timeline__heading">
+          <span className="lab-timeline__heading-icon" aria-hidden="true">
+            <Activity size={17} />
+          </span>
+          <div>
+            <span className="lab-timeline__title">RTM 数据流</span>
+            <small>按发生顺序观察 API 调用与服务端事件</small>
+          </div>
+          <span className="lab-timeline__entry-count" aria-label={`${entries.length} 条记录`}>
+            {entries.length}
+          </span>
+        </div>
+
+        <div className="lab-timeline__actions">
+          <button
+            type="button"
+            className="lab-timeline__action"
+            onClick={() => sources.forEach((source) => source.clear?.())}
+            data-testid="timeline-clear"
+          >
+            <Eraser size={13} aria-hidden="true" />
+            清空
+          </button>
+          <button
+            type="button"
+            className="lab-timeline__action"
+            onClick={() => setShowLinkState((current) => !current)}
+            aria-pressed={showLinkState}
+          >
+            {showLinkState ? <Unplug size={13} aria-hidden="true" /> : <RadioTower size={13} aria-hidden="true" />}
+            {showLinkState ? '隐藏连接' : '显示连接'}
+          </button>
+          <button
+            type="button"
+            className="lab-timeline__action"
+            onClick={onToggleCollapsed}
+            aria-expanded
+            data-testid="timeline-toggle"
+          >
+            <ChevronsRight size={13} aria-hidden="true" />
+            折叠
+          </button>
+        </div>
 
         {/* 图例：一眼分辨哪些是主动调用、哪些是被动接收。 */}
         <div className="lab-timeline__legend" data-testid="timeline-legend">
@@ -211,50 +266,16 @@ export function TimelinePanel({
             </span>
           ))}
         </div>
-
-        <div className="lab-timeline__actions">
-          <button
-            type="button"
-            className="lab-timeline__action"
-            onClick={() => sources.forEach((source) => source.clear?.())}
-            data-testid="timeline-clear"
-          >
-            清空
-          </button>
-          <button
-            type="button"
-            className="lab-timeline__action"
-            onClick={onToggleCollapsed}
-            aria-expanded
-            data-testid="timeline-toggle"
-          >
-            折叠
-          </button>
-        </div>
       </div>
 
-      {/* 三维筛选。三者都是条目上已有字段，**不为筛选新增数据字段**。 */}
+      {/* 单端房间只需按 API/事件类型筛选。 */}
       <div className="lab-timeline__filters">
         <FilterRow
-          label="类型"
+          label="类型筛选"
           options={kinds}
           picked={filter.kinds}
-          onToggle={toggle('kinds')}
+          onToggle={toggleKind}
           testId="filter-kind"
-        />
-        <FilterRow
-          label="角色"
-          options={roles}
-          picked={filter.roles}
-          onToggle={toggle('roles')}
-          testId="filter-role"
-        />
-        <FilterRow
-          label="uid"
-          options={uids}
-          picked={filter.uids}
-          onToggle={toggle('uids')}
-          testId="filter-uid"
         />
         {filtering && (
           <button
@@ -268,7 +289,7 @@ export function TimelinePanel({
         )}
       </div>
 
-      <div className="lab-timeline__body">
+      <div className="lab-timeline__body" ref={bodyRef} data-testid="timeline-body">
         {visible.length === 0 ? (
           <p className="lab-timeline__empty">
             {entries.length === 0
@@ -278,8 +299,8 @@ export function TimelinePanel({
         ) : (
           <ol className="lab-timeline__list">
             {visible.map((entry) => (
-              // key 用 uid + seq：seq 只在实例内单调，跨实例会撞。
-              <TraceRow key={`${entry.uid}:${entry.seq}`} entry={entry} />
+              // key 用 role + uid + seq：页面级 login 与角色 trace 可共享同一 uid/seq。
+              <TraceRow key={`${entry.role}:${entry.uid}:${entry.seq}`} entry={entry} />
             ))}
           </ol>
         )}

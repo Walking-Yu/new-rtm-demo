@@ -42,7 +42,7 @@ export function ScenePlaceholder({ scene }: ScenePlaceholderProps) {
       </p>
       <p className="lab-placeholder__cta">
         想先看真实链路，请前往 <Link to="/social/voice-room">语聊房：麦位与房内互动</Link>
-        —— 目前唯一已实现的场景，两个真实客户端跑在同一个标签页里。
+        —— 目前唯一已实现的场景；每个标签页运行一个真实角色客户端。
       </p>
     </div>
   );

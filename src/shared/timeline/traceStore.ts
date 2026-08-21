@@ -50,6 +50,8 @@ export interface TraceInput {
   kind: TraceKind;
   /** API 方法名或事件名。 */
   name: string;
+  /** SDK 事件类型，例如 `REMOTE_JOIN`、`REMOTE_STATE_CHANGED`。 */
+  eventTag?: string;
   /** 短摘要，**不放完整对象** —— 时间线只呈现可读要点。 */
   summary?: string;
   /** 耗时，仅 api 条目有。 */

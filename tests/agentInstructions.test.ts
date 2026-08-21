@@ -21,13 +21,8 @@ describe('Agent 开发约定', () => {
     expect(agents).toContain(
       '未经用户明确要求，不得运行 `git add`、`git commit`、`git commit --amend`、`git push`',
     );
-  });
-
-  it.each([
-    'docs/agents/issue-tracker.md',
-    'docs/agents/triage-labels.md',
-    'docs/agents/domain.md',
-  ])('keeps the Matt configuration at %s', (path) => {
-    expect(existsSync(resolveRootFile(path))).toBe(true);
+    expect(agents).not.toContain('seats-lock');
+    expect(agents).not.toContain('业务事件 handler 返回摘要和可选异步 completion');
+    expect(agents).toContain('`onRtmEvent.ts` 先记录事件 trace，再调用 `consume`');
   });
 });

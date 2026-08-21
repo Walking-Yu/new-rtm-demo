@@ -1,8 +1,19 @@
 import react from '@vitejs/plugin-react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig(({ mode }) => ({
-  plugins: [react()],
+export default defineConfig(({ mode }) => {
+  const https = mode === 'https'
+    ? {
+        key: readFileSync(resolve('.cert/dev-key.pem')),
+        cert: readFileSync(resolve('.cert/dev.pem')),
+      }
+    : undefined;
+
+  return {
+    plugins: [react()],
+    server: https ? { https } : undefined,
   // E2E 通过页面脚本显式注入环境，不读取开发者本机的任何 `.env*` 文件。
   // 普通 dev/build 的 envDir 保持默认值，因此 `.env.local` 仍正常生效。
   envDir: mode === 'e2e' ? false : undefined,
@@ -27,4 +38,5 @@ export default defineConfig(({ mode }) => ({
     css: true,
     include: ['src/**/*.test.{ts,tsx}', 'tests/**/*.test.{ts,tsx}'],
   },
-}));
+  };
+});

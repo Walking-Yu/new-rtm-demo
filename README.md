@@ -1,16 +1,18 @@
 # RTM 场景实验室
 
-用真实的 Agora RTM Web SDK 演示信令场景：每个场景在同一页面里跑**多个真实客户端**，
-并把每一次 RTM API 调用与回调事件实时画在时间线上。
+用真实的 Agora RTM Web SDK 演示信令场景。语聊房每个浏览器 Tab 只运行**一个角色和一个 RTM client**，
+并把当前角色的每一次 RTM 调用与回调事件实时画在时间线上。
 
-当前已实现 **语聊房**（房主端 + 听众端，两台手机并排）。注册表里另有 22 个已规划场景，
+当前已实现 **语聊房**（Host 与 Audience 分别在独立 Tab 中运行）。注册表里另有 22 个已规划场景，
 点进去是占位页 —— 骨架、导航、时间线是共用的，新增场景只需补自己的目录。
+
+想从源码理解 RTM 在语聊房中的推荐用法，请从[《语聊房：RTM 最佳实践示例》](src/scenes/voice-room/README.md)开始。它串起页面级 RTM 会话、Host/Audience 角色操作、入站事件、业务状态和进一步的协议时序文档。
 
 ```
 一级 tab   社交 / 教育 / 企业 / 物联网 / 内容 / 医疗 / 出行 / 游戏
 二级 tab   该分类下的场景，已实现的可点进去，未实现的标「待建」
-主区       场景本体（语聊房 = 两台手机）
-右侧       时间线面板，按 uid 归并两端的 RTM 调用与事件
+主区       场景本体（语聊房 = 当前 Tab 的单角色视图）
+右侧       时间线面板，展示当前角色的 RTM 调用与事件
 ```
 
 ---
@@ -21,11 +23,13 @@
 
 ### 1. 单页面多个 RTM 实例是实测可行，但官方文档未作保证
 
-本项目的核心做法是**一个角色一个 `RTMClient` 实例**（房主一个、听众一个，同页共存）。
+> 历史说明：当前语聊房已不依赖同页多实例，每个 Tab 只创建一个 RTM client。以下调研结论仅供其他可能需要多实例的场景参考。
+
+历史版本曾使用**一个角色一个 `RTMClient` 实例**（房主一个、听众一个，同页共存）。
 这条路径是实测可行的，但**官方文档没有承诺它**，反而在 SDK 自带的类型定义里写着相反口径的建议：
 
 > 推荐全局只创建一个 RTM 实例……RTM 不支持多实例同时登录，请避免引发多实例互踢问题。
-> —— `vendor/agora-rtm-2.3.0/agora-rtm.d.ts`
+> —— `agora-rtm@2.3.0` 包内的 `agora-rtm.d.ts`
 
 实测结论是：这句话实际约束的是**同一 `appId + userId`** 的重复实例（第二个会在构造期抛
 `-10027 RTM_ERROR_DUPLICATE_USER_ID`），而不同 userId 的多实例可以正常构造、登录、各自收自己的事件
@@ -39,7 +43,7 @@
 - 后续 SDK 版本可能改变这一行为。
 
 **所以：照抄进生产前请自行压测并与声网确认。** 完整证据与偏移量级引用见
-[`docs/research/2026-08-05-rtm-web-多实例与嵌入约束.md`](docs/research/2026-08-05-rtm-web-多实例与嵌入约束.md)。
+[《RTM Web 多实例与嵌入约束》](src/scenes/voice-room/docs/2026-08-05-rtm-web-多实例与嵌入约束.md)。
 
 一个直接的工程后果，实现时必须知道：那张重复 uid 注册表**只增不删**（全 bundle 无 `delete`）。
 即 `logout()` 之后，同一个 userId 在**同一个页面生命周期内无法重建实例**。所以重连必须复用同一个
@@ -53,13 +57,11 @@ Demo 里的踢出、封禁、强制麦控都是**客户端协作行为**：一�
 **生产环境必须在服务端校验。** 界面上也显式渲染了这条边界告警，请不要在二次开发时把它删掉，
 也不要把这些动作描述成「已强制执行的权限控制」。
 
-### 3. 默认 appId 无 token 鉴权，仅供体验
+### 3. 仓库不包含真实 App ID、App Certificate 或 token
 
-`index.html` 里内联注入的那个 App ID **没有开启 token 鉴权**，只为让 clone 下来就能跑通体验。
+App ID 虽然不是密码，但它标识真实项目，公开后可能被滥用并消耗项目资源，因此不应提交真实值。仓库中的 `.env.example` 只保留空配置模板。
 
-接入生产必须换成**支持 token 鉴权**的 App ID，并在 `login() / join()` 时传入 token。
-代码里保留了 token 参数位，但**本项目不含 token 生成器、不接收 App Certificate、不预置任何密钥**，
-也请不要新增 —— token 签发是服务端的事。
+代码里保留了 token 参数位，但**本项目不含 token 生成器、不接收 App Certificate、不预置任何密钥**。生产环境应由 App Server 签发 token，并通过部署环境注入 App ID。
 
 ---
 
@@ -69,11 +71,21 @@ Demo 里的踢出、封禁、强制麦控都是**客户端协作行为**：一�
 
 ```bash
 npm install
+cp .env.example .env.local   # 填写 VITE_APP_ID=<你的 App ID>
 npm run dev          # http://127.0.0.1:8080/
 ```
 
-不配置任何东西也能跑：`index.html` 里有一段开发用的体验 App ID 注入（见上面第 3 条声明）。
-想换成自己的 App ID，两种方式任选：
+局域网需要麦克风、摄像头或 Clipboard API 时使用 HTTPS。启动脚本支持三种模式：
+
+```bash
+RTM_DEMO_HOST=0.0.0.0 ./start-demo.sh             # HTTP 8080
+RTM_DEMO_HOST=0.0.0.0 ./start-demo.sh --https     # HTTPS 8080
+RTM_DEMO_HOST=0.0.0.0 ./start-demo.sh --both      # HTTP 8080 + HTTPS 8443
+```
+
+HTTPS 模式使用 `mkcert` 为 `localhost`、`127.0.0.1` 和自动发现的局域网 IPv4 地址生成证书到 `.cert/`。首次使用需由用户自行执行 `mkcert -install`；其他电脑或手机还需要安装并信任启动日志中打印的 `rootCA.pem`。不要提交 `.cert/`、私钥或本地 CA。
+
+App ID 有两种配置方式：
 
 ```bash
 cp .env.example .env.local   # 填 VITE_APP_ID=<你的 App ID>
@@ -87,6 +99,7 @@ cp .env.example .env.local   # 填 VITE_APP_ID=<你的 App ID>
 
 ```bash
 npm run build        # tsc -b && vite build，单入口
+npm run dev:https    # HTTPS 8080；需先由 start-demo.sh 生成证书
 npm test             # vitest
 npm run test:e2e     # playwright，无头
 ```
@@ -111,7 +124,9 @@ interface LabEnv {
 }
 ```
 
-优先级：`window.__ENV__.appId` → `import.meta.env.VITE_APP_ID` → 未配置（渲染引导页）。
+优先级：`window.__ENV__.appId` → `import.meta.env.VITE_APP_ID` → 未配置。
+若上层显式注入了空的 `window.__ENV__` 且没有 `VITE_APP_ID`，则视为未配置并渲染引导页；
+这也是 E2E 稳定覆盖未配置分支的方式。
 
 **这个顺序不可颠倒。** `import.meta.env` 是构建期烧进 bundle 的常量，若让它优先，上层就永远换不掉 appId。
 
@@ -156,34 +171,32 @@ App ID 不可互换；接入网关区域与防火墙白名单也不同 —— �
 
 ---
 
-## 为什么 RTM 一角色一份、RTC 共享一份
+## 为什么 RTM 按角色拆模块、RTC 共享一份
 
-**这一节不能省。** 少了它，后来者一定会尝试把两份 `rtm-*.ts` 抽成共享基类 —— 那正好会毁掉本项目的产品价值。
+**这一节不能省。** 少了它，后来者容易把业务协议塞回 `rtm.ts`，或把两个角色的 RTM 机制抽成共享基类。
 
-目录里看起来存在明显的「重复」：`rtm-host.ts` 与 `rtm-audience.ts` 各写一遍登录、订阅、锁、信封、
-去重、重连，而 `rtc.ts` 只有共享的一份。这不是疏忽，是两类文件的**目标不同**：
+本节只概括整个实验室的模块取舍；语聊房的完整阅读顺序、RTM primitive 选择和单页生命周期见[场景 README](src/scenes/voice-room/README.md)。
 
-| | `rtm-<role>.ts` | `rtc.ts` |
+每个角色由 `rtm.ts` 与 `onRtmEvent.ts` 组成：前者提供按功能命名的原子 RTM 操作，后者负责事件绑定、信封校验和去重。业务状态统一留在 `event-driven-single-room-client.ts`，SDK client 与 login/logout 统一留在 `app-rtm.ts`。Host/Audience 的角色模块刻意独立，`rtc.ts` 则全场景共享。
+
+| | 角色 RTM bundle | `rtc.ts` |
 | --- | --- | --- |
-| 定位 | **教材** | **脚手架** |
-| 目标 | 被客户整份拷进自己项目 | 让 demo 能听见声音 |
-| 依赖 | 零 runtime 依赖，只 import SDK 与纯类型 | 可自由 import 共享层（`rtcErrors` 等） |
-| 份数 | 一场景一角色一份 | 全场景共享一份 |
+| 定位 | **可复制的 RTM 接入样板** | **脚手架** |
+| 目标 | 按角色复制 `rtm.ts + onRtmEvent.ts` | 让 demo 能听见声音 |
+| 依赖 | 只依赖页面级 RTM seam，不依赖业务状态 | 可 import 共享层 |
+| 份数 | 一场景一角色一套 | 全场景共享一份 |
 
 一句话：**RTM 是这个 demo 要教的东西，RTC 只是为了把 RTM 的效果演示出来所必需的配套。**
 
-客户的项目里已经有自己的 RTC 接法，不需要我们这份；但他们需要看到「语聊房的房主端，
-用 RTM 到底该按什么顺序调哪些 API」。抽共享基类会让这条阅读路径断掉 —— 拷走一个文件变成拷走一棵依赖树，
-而「打开一个文件就能看懂并拷走」是本项目唯一的核心卖点。
+客户的项目里通常已有 RTC 接法，不需要复制这份；RTM 则按业务角色复制。页面级会话统一管理 client 与 login/logout，两个角色的 `rtm.ts` / `onRtmEvent.ts` 刻意不抽共享基类。
 
 同一条原则的两个推论：
 
-- **`rtm-<role>.ts` 里任何运行时的相对 import 都是 bug。** 业务规则经构造参数 `stateAdapter` 注入，
-  而不是 import 同目录的转移函数。
-- **`rtm-<role>.ts` 只写「调用顺序」，不写「业务规则」。** 「上麦要先抢锁、再读快照、再写回、再释放锁」
-  是调用顺序，写在里面；「只有房主能同意上麦」是业务规则，在注入的纯函数里。
+- **页面级会话是唯一 SDK 所有者。** 它在 login 前注册事件，角色模块只依赖操作端口与事件分发 seam。
+- **业务 store 不直接 import RTM SDK。** 它只调用 Host 或 Audience `rtm.ts` 的语义接口。
+- **Storage 完全事件驱动。** Host 在空 `SNAPSHOT` 上初始化四个 key，Audience 不写 Storage，所有端都不主动读 metadata 或使用 Lock。
 
-另外，只有**实际开麦的那个用户**才创建 RTC 实例，所以 `rtc.ts` 也不需要按角色拆份。
+所有进入房间的成员都会加入 RTC 频道以收听远端音频；只有**实际在麦位上的用户**才创建并发布本地麦克风轨道。RTC 接法没有角色差异，所以 `rtc.ts` 不需要按角色拆份。
 时间线**只呈现 RTM**，不采集 RTC —— 混入 RTC 节点会稀释「RTM 的数据流」这条主线。
 
 ---
@@ -191,11 +204,13 @@ App ID 不可互换；接入网关区域与防火墙白名单也不同 —— �
 ## 目录导览
 
 ```
-index.html                 唯一入口。含开发用的体验 App ID 注入
+index.html                 唯一入口，不包含真实 App ID
 
 src/app/                   实验室外壳：路由、两级 tab、env 解析、身份推导、样式
 src/scenes/registry.ts     8 个一级分类 + 23 个二级场景的注册表
-src/scenes/voice-room/     唯一已实现的场景
+src/scenes/voice-room/     唯一已实现的场景；单 Tab 单角色
+  README.md                语聊房 RTM 最佳实践与源码阅读入口
+  docs/                    语聊房对外文档、函数映射与进一步说明
 src/shared/rtc.ts          全场景共享的 RTC 辅助模块
 src/shared/timeline/       trace store、多实例归并、过滤
 src/test/setup.ts          vitest 全局 setup
@@ -203,61 +218,55 @@ src/vite-env.d.ts          Vite 客户端类型（import.meta.env、?raw 后缀�
 
 e2e/lab.spec.ts            端到端测试
 tests/                     仓库形态与启动脚本的断言
-vendor/agora-rtm-2.3.0/    尚未发布到 npm 的 RTM SDK，版权归声网
-docs/                      spec、实现票、调研笔记
 ```
 
 `src/scenes/voice-room/` 内部：
 
 ```
-rtm-host.ts        房主端 RTM 单文件 ← 可拷走
-rtm-audience.ts    听众端 RTM 单文件 ← 可拷走
-state.ts           房间快照类型
-transitions.ts     纯函数状态转移（业务规则都在这里）
-stateAdapter.ts    快照的序列化与校验
-orchestrator.ts    两端编排：创建两个 client、按生命周期连接与清理
+host/rtm.ts                    房主端原子 RTM 操作
+host/onRtmEvent.ts             房主端事件绑定与协议校验
+audience/rtm.ts                听众端原子 RTM 操作
+audience/onRtmEvent.ts         听众端事件绑定与协议校验
+app-rtm.ts                与单页面应用生命周期对齐的唯一 client、login/logout 与事件分发
+browser-room-directory.ts      Local Storage 房间目录
+voice-room-url.ts              唯一 data 参数 codec
+room-entry-controller.ts       Host/Audience 归一化入房
+event-driven-single-room-client.ts 单角色业务桥接与事件 store
+config.ts                      麦位数与初始公告
 VoiceRoomScene.tsx 场景容器
-components/        纯展示组件
 ```
 
-## 哪些文件可以直接拷走
+## 语聊房源码导航
 
-**按需拷这几个，其余都是实验室脚手架：**
+以下文件组成语聊房的 RTM 运行路径：
+
+先阅读[语聊房场景 README](src/scenes/voice-room/README.md)，了解 Storage、Presence 和 Message 在场景中的分工，以及生产环境必须由 App Server 替换的 Local Storage、nickname、token 和权限实现。单独复制一个 `rtm.ts` 不包含完整的收信和业务状态实现。
 
 | 文件 | 说明 |
 | --- | --- |
-| `src/scenes/voice-room/rtm-host.ts` | 房主端。零 runtime 依赖，拷走即可用 |
-| `src/scenes/voice-room/rtm-audience.ts` | 听众端。同上 |
-| `src/scenes/voice-room/state.ts` | 房间快照类型。纯类型 |
-| `src/scenes/voice-room/transitions.ts` | 纯函数转移。想换业务规则就改这里 |
-| `src/scenes/voice-room/stateAdapter.ts` | 快照序列化。把上面三个接到 RTM 单文件上 |
+| `src/scenes/voice-room/host/rtm.ts` | Host 订阅、Storage 单写、消息信封和 trace |
+| `src/scenes/voice-room/host/onRtmEvent.ts` | Host SDK 事件过滤、信封校验、去重和 listener 调用 |
+| `src/scenes/voice-room/audience/rtm.ts` | Audience 订阅、消息信封、Presence 和 trace |
+| `src/scenes/voice-room/audience/onRtmEvent.ts` | Audience SDK 事件过滤、信封校验、去重和 listener 调用 |
+| `src/scenes/voice-room/app-rtm.ts` | 与语聊房单页面应用生命周期对齐的唯一 SDK client、login/logout 与事件分发 |
+| `src/scenes/voice-room/event-driven-single-room-client.ts` | 当前单角色的语聊房业务协议与 Demo 房间 store |
+| `src/scenes/voice-room/voice-room-url.ts` | Demo 邀请 URL 与 `data=...` 短邀请内容的 codec；生产环境应替换为服务端房间/邀请凭证 |
 
-两份 `rtm-*.ts` 的文件头注释里写了拷走前必须知道的事，以及该角色 RTM 用法的总览表格。
+旧 Lock、同页双客户端 orchestrator 和兼容入口已经删除；当前目录只保留正式运行路径。
 
-**不需要拷的**：`src/app/`（外壳）、`src/shared/`（时间线与 RTC 脚手架）、`components/`（展示层）、
-`orchestrator.ts`（同页两端编排是 demo 特有需求）。
+`src/app/` 是实验室外壳，`src/shared/` 是时间线与 RTC 脚手架，不属于语聊房的 RTM 场景协议。
 
 ---
 
-## 关于 vendor 里的 SDK
+## Agora RTM SDK 来源
 
-`agora-rtm@2.3.0` 尚未发布到 npm（npm 上最高仍是 `2.2.4`），所以随仓库携带在
-`vendor/agora-rtm-2.3.0/`，依赖写成相对路径 `file:./vendor/agora-rtm-2.3.0`，
-任意机器 clone 后 `npm install` 都能装上。
+`agora-rtm@2.3.0` 已正式发布到 npm，项目通过 `"agora-rtm": "^2.3.0"` 安装。
+运行 `npm install` 会从当前 npm registry 下载 SDK，并由 `package-lock.json` 锁定实际版本
+与完整性校验值。
 
-**该包版权归声网（Agora Lab, Inc.），遵循其自带的许可声明，不在本仓库 MIT 许可证范围内。**
-
-正式发布到 npm 后：把依赖改回 `"agora-rtm": "^2.3.0"` 并删除 `vendor/` 目录。
-
-## Codex / Claude + Matt 工作流
-
-仓库同时支持 Codex 与 Claude Code：`AGENTS.md` 和 `CLAUDE.md` 是内容完全一致的项目规则入口，修改时必须同步。`docs/agents/` 保存两端共享的 Matt 工作流配置，`docs/scratch/` 保存 spec、map、issues 和 handoff 等工作产物。
-
-Matt skills 是开发环境依赖，不是本应用的 npm 依赖。使用相关流程前，需要在 Agent 环境中安装 `mattpocock/skills`，并确认能显式调用 `wayfinder`、`to-spec`、`to-tickets`、`implement`、`tdd`、`code-review`、`domain-modeling` 等 skills。不同客户端使用各自支持的显式 skill 调用入口。
-
-项目规则优先于 skill 默认动作。除非用户明确要求，不得因为 `implement` 或其他 skill 的建议而运行 `git add`、`git commit`、`git push` 或同类命令。
+本机若仍保留发布前的 `vendor/` 历史副本，该目录会被 `.gitignore` 忽略，不随开源仓库分发。
 
 ## 许可证
 
 本仓库自身的 demo 代码与文档采用 MIT，见 [`LICENSE`](LICENSE)。
-`vendor/` 下的 SDK 与通过 npm 安装的 `agora-rtc-sdk-ng` 各自遵循其自身许可证。
+通过 npm 安装的 `agora-rtm` 与 `agora-rtc-sdk-ng` 各自遵循其自身许可证，不属于本仓库 MIT 许可证覆盖范围。

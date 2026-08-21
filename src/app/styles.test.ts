@@ -14,7 +14,7 @@
 
 // 取源码文本用 Vite 的 `?raw`，不用 node:fs —— `tsconfig.app.json` 的 `types` 里
 // 没有 `node`（app 代码是浏览器包，不该看见 `process`），用 node API 会让 `tsc -b` 红。
-// 这是本项目既有的约定，见 rtm-host.test.ts 与 TimelinePanel.test.ts。
+// 这是本项目既有的约定，见 roleBundleArchitecture.test.ts 与 TimelinePanel.test.ts。
 import { describe, expect, it } from 'vitest';
 
 import css from './styles.css?raw';
@@ -26,56 +26,90 @@ function ruleBody(selector: string): string {
   return css.slice(index, css.indexOf('}', index));
 }
 
-describe('语聊房布局数值（spec 已两轮确认，不要回退）', () => {
-  it('手机高度取 812px 与「视口高度 - 210px」的较小值', () => {
-    // 固定值或百分比都不行：前者在小屏上裁切，后者拿不到外壳两级 tab 与告警条的高度。
-    expect(ruleBody('.vr-phone')).toContain('height: min(812px, calc(100vh - 210px))');
+describe('原型外壳视觉契约', () => {
+  it('一级 tab 使用底部蓝色指示线，不使用深色药丸背景', () => {
+    const tab = ruleBody('.lab-tab--primary');
+    const active = ruleBody(".lab-tab--primary[data-active='true']");
+
+    expect(tab).toContain('border-bottom: 2px solid transparent');
+    expect(active).toContain('border-bottom-color: var(--lab-indigo)');
+    expect(active).not.toContain('background: var(--lab-ink)');
   });
 
-  it('麦位方框最小高度 76px', () => {
-    expect(ruleBody('.vr-seat')).toContain('min-height: 76px');
+  it('导航与语聊房入口遵循紧凑字号层级', () => {
+    expect(css).toContain('--lab-text-display: 22px');
+    expect(css).toContain('--lab-text-title: 17px');
+    expect(css).toContain('--lab-text-section: 14px');
+    expect(css).toContain('--lab-text-body: 12px');
+    expect(css).toContain('--lab-text-nav-primary: 12px');
+    expect(css).toContain('--lab-text-nav-secondary: 11px');
+    expect(css).toContain('--lab-text-meta: 10px');
+
+    expect(ruleBody('.lab-tab--primary')).toContain('font-size: var(--lab-text-nav-primary)');
+    expect(ruleBody('.lab-tab--secondary')).toContain('font-size: var(--lab-text-nav-secondary)');
+    expect(css).toMatch(/\.vr-entry--landing h1 \{[\s\S]*?font-size: var\(--lab-text-display\)/);
+    expect(css).toContain('.vr-entry__choice strong { color: #31374b; font-size: var(--lab-text-section); }');
   });
 
-  it('麦位头像 26px', () => {
-    const avatar = ruleBody('.vr-seat__avatar');
-    expect(avatar).toContain('width: 26px');
-    expect(avatar).toContain('height: 26px');
+  it('时间线在桌面端按原型粘在视口内', () => {
+    expect(css).toMatch(
+      /\.lab-timeline \{\s+position: sticky;\s+top: 16px;[\s\S]*?height: calc\(100vh - 166px\)/,
+    );
   });
 
-  it('麦位网格 4 列', () => {
-    expect(ruleBody('.vr-seats')).toContain('grid-template-columns: repeat(4, minmax(0, 1fr))');
+  it('时间线操作紧随图例左对齐，不自动推到右侧', () => {
+    const actions = ruleBody('.lab-timeline__actions');
+
+    expect(actions).not.toContain('margin-left: auto');
   });
 
-  it('窄屏断点是 1240px', () => {
-    expect(css).toContain('@media (max-width: 1240px)');
+  it('时间线色点与时间戳顶部对齐，不随多行摘要垂直居中', () => {
+    const dot = ruleBody('.lab-trace__dot');
+
+    expect(dot).toContain('align-self: start');
+    expect(dot).toContain('margin-top: 4px');
   });
+
+  it('中等宽度仍保持房间与数据流双栏，窄屏才改为单列', () => {
+    expect(css).toContain('@media (max-width: 960px)');
+    expect(css).not.toContain('@media (max-width: 1240px) {\n  .lab-body,');
+  });
+
+  it('单端房间在桌面端以受控高度布局，避免麦位把页面撑出首屏', () => {
+    expect(css).toMatch(/\.vr-single \{[\s\S]*?height: min\(680px, calc\(100vh - 166px\)\)/);
+    expect(css).toContain('grid-template-rows: auto auto auto minmax(0, 1fr) 62px;');
+  });
+
 });
 
-describe('手机内只有公屏滚动', () => {
-  /** 语聊房那一段样式。外壳的规则（两级 tab 横向滚动等）不在本约束范围内。 */
-  const sceneCss = css.slice(css.indexOf('.vr-scene {'));
-
-  it('整台手机不滚动 —— 溢出被裁掉，靠内部区块自己让出空间', () => {
-    expect(ruleBody('.vr-phone')).toContain('overflow: hidden');
+describe('语聊房局部滚动', () => {
+  it('单角色房间容器不滚动，溢出由内部区块承接', () => {
+    expect(css).toMatch(/\.vr-single \{[^}]*overflow: hidden;/);
   });
 
-  it('公屏是唯一纵向滚动的区块', () => {
-    // 逐条找出纵向可滚的规则，断言只有公屏一个。多出任何一条都会让「其余区块钉住」
-    // 这条约束破功 —— 之前角色面板的申请列表就自带过一个 max-height + overflow-y。
-    const scrollable = [...sceneCss.matchAll(/([^{}]+)\{([^}]*overflow-y:\s*(?:auto|scroll)[^}]*)\}/g)]
-      .map((match) => match[1].trim().split('\n').pop()?.trim())
-      .filter(Boolean);
-
-    expect(scrollable).toEqual(['.vr-chat']);
+  it('角色面板、入口列表和公屏分别承载自己的溢出内容', () => {
+    expect(ruleBody('.vr-single__panel')).toContain('overflow-y: auto');
+    expect(ruleBody('.vr-entry--landing')).toContain('overflow-y: auto');
+    expect(css).toMatch(/\.vr-single__chat > div \{[^}]*overflow: auto;/);
   });
 
-  it('公屏带 min-height: 0 —— 缺了它 flex 子项会被内容撑破，变成整台手机滚动', () => {
-    expect(ruleBody('.vr-chat')).toContain('min-height: 0');
+  it('控制台成员 UID 可截断，同时保留踢出与封禁按钮宽度', () => {
+    expect(ruleBody('.vr-single__member-row')).toContain('grid-template-columns: minmax(0, 1fr) auto auto');
+    expect(ruleBody('.vr-single__member-row small')).toContain('text-overflow: ellipsis');
   });
 
-  it('成员条只横向滚动，纵向不滚 —— spec 要求超出显示计数而不是滚动', () => {
-    const memberBar = ruleBody('.vr-member-bar');
-    expect(memberBar).toContain('overflow-x: auto');
-    expect(memberBar).not.toContain('overflow-y');
+  it('麦位有宽高上限，较高视口的剩余空间由公屏承接', () => {
+    expect(css).toMatch(/\.vr-single__seat \{[^}]*max-width: 160px;[^}]*max-height: 86px;/);
+    expect(css).toMatch(/\.vr-single__chat-feed \{[^}]*max-height: none !important;/);
+  });
+
+  it('房间视角不设固定最大宽度，和数据流看板共同随页面变宽', () => {
+    expect(ruleBody('.lab-body')).toContain('max-width: none');
+    expect(css).toMatch(/\.vr-single \{[^}]*width: 100%;[^}]*max-width: none;/);
+  });
+
+  it('公屏网格允许内容收缩，避免撑破整个房间容器', () => {
+    expect(css).toMatch(/\.vr-single__chat \{[^}]*min-height: 0;/);
+    expect(css).toMatch(/\.vr-single__chat-feed \{[^}]*min-height: 0;/);
   });
 });

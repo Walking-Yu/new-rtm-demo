@@ -3,11 +3,10 @@
  *
  * ## 为什么这个文件可以被各场景 import（零依赖铁律的唯一例外）
  *
- * 本项目有一条铁律：场景目录下的 `rtm-<role>.ts` **零依赖**，客户拷一个文件走就能用。
- * `rtc.ts` 是那条铁律的**唯一例外** —— 它全场景共享单份、允许被 import。理由：
+ * Role RTM modules stay independent from business state, while `rtc.ts` is shared by all scenes.
  *
  * 1. **它不是本 demo 要展示的东西。** 实验室要演示的是 RTM 能力，RTC 只是让语音能真的
- *    听见的配角。客户拷走 `rtm-host.ts` 是为了照抄 RTM 调用顺序；RTC 那部分他们项目里
+ *    听见的配角。客户拷走角色 `rtm.ts` / `onRtmEvent.ts` 是为了照抄 RTM 调用顺序；RTC 那部分他们项目里
  *    早已有了，不需要跟着拷。
  * 2. **它没有场景差异。** 加入频道、开关麦、开关摄像头、订阅远端 —— 23 个场景要的都是
  *    这四件事，逐场景复制一份只会产生 23 份一模一样的代码。
@@ -81,6 +80,8 @@ export interface RtcHelper {
   publishMicrophone(): Promise<void>;
   unpublishMicrophone(): Promise<void>;
   setMicrophoneMuted(muted: boolean): Promise<void>;
+  /** 本地麦克风轨道存在且底层 MediaStreamTrack 仍为 live。与是否发布成功无关。 */
+  isMicrophoneCaptureHealthy(): boolean;
   publishCamera(): Promise<void>;
   unpublishCamera(): Promise<void>;
   setCameraMuted(muted: boolean): Promise<void>;
@@ -301,6 +302,16 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
         await microphone.setMuted(muted);
       } catch (error) {
         throw toRtcSdkError(error);
+      }
+    },
+
+    isMicrophoneCaptureHealthy() {
+      if (!microphone) return false;
+      try {
+        const mediaTrack = microphone.getMediaStreamTrack();
+        return mediaTrack.readyState === 'live' && !mediaTrack.muted;
+      } catch {
+        return false;
       }
     },
 

@@ -11,7 +11,7 @@
  * 时间线面板的 DOM 节点不被卸载重建。
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom';
 
 import { EnvGuide } from './EnvGuide';
@@ -27,12 +27,9 @@ import { VoiceRoomScene } from '../scenes/voice-room/VoiceRoomScene';
 const DEFAULT_PATH = '/social/voice-room';
 
 /**
- * 一级 tab 条：logo + 8 个分类 + 右侧配置提示。
- *
- * 右侧提示读真实的 env 来源，不写死文案 —— 否则「App ID 来自环境注入」这句话
- * 与实际配置无关，看不出当前用的是注入值还是本地兜底。
+ * 一级 tab 条：logo + 8 个分类。
  */
-function PrimaryTabs({ activeCategoryId, env }: { activeCategoryId: string; env: ResolvedEnv }) {
+function PrimaryTabs({ activeCategoryId }: { activeCategoryId: string }) {
   return (
     <header className="lab-topbar">
       <div className="lab-logo">
@@ -54,9 +51,6 @@ function PrimaryTabs({ activeCategoryId, env }: { activeCategoryId: string; env:
           </Link>
         ))}
       </nav>
-      <div className="lab-topbar__aside" data-testid="env-hint">
-        App ID 来自 {env.source ?? '未配置'}
-      </div>
     </header>
   );
 }
@@ -95,6 +89,10 @@ function SecondaryTabs({ categoryId, activeSceneId }: { categoryId: string; acti
  * 依赖变化而反复重订阅。
  */
 const NO_TRACE_SOURCES: readonly TraceSource[] = [];
+const MIN_ROOM_WIDTH = 480;
+const MIN_TIMELINE_WIDTH = 400;
+const SPLITTER_WIDTH = 18;
+const KEYBOARD_RESIZE_STEP = 24;
 
 /**
  * 语聊房主区：真实的双客户端编排。
@@ -175,6 +173,10 @@ function LabShell({ env, voiceRoomOverrides }: LabShellProps) {
   // 折叠态由外壳持有，不由面板自己 —— 它要改 `.lab-body` 的栅格（1fr/400px → 1fr/40px），
   // 那是外壳的样式，面板拿不到。
   const [collapsed, setCollapsed] = useState(false);
+  const [timelineWidth, setTimelineWidth] = useState<number>();
+  const [resizing, setResizing] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ startX: number; startWidth: number } | undefined>(undefined);
   // trace 来源由场景在挂载后交上来。外壳持有它，因为时间线面板在 `<Outlet />` 之外，
   // 场景切换时保持挂载。
   const [traceSources, setTraceSources] = useState<readonly TraceSource[]>(NO_TRACE_SOURCES);
@@ -191,16 +193,92 @@ function LabShell({ env, voiceRoomOverrides }: LabShellProps) {
     [env, publishTraceSources, voiceRoomOverrides],
   );
 
+  const clampTimelineWidth = useCallback((nextWidth: number) => {
+    const body = bodyRef.current;
+    const bodyWidth = body?.getBoundingClientRect().width ?? 0;
+    const bodyStyle = body ? window.getComputedStyle(body) : undefined;
+    const horizontalPadding = bodyStyle
+      ? (Number.parseFloat(bodyStyle.paddingLeft) || 0) + (Number.parseFloat(bodyStyle.paddingRight) || 0)
+      : 0;
+    const contentWidth = bodyWidth - horizontalPadding;
+    const maximum = Math.max(
+      MIN_TIMELINE_WIDTH,
+      contentWidth - MIN_ROOM_WIDTH - SPLITTER_WIDTH,
+    );
+    return Math.min(maximum, Math.max(MIN_TIMELINE_WIDTH, nextWidth));
+  }, []);
+
+  const currentTimelineWidth = (separator: HTMLElement) =>
+    separator.nextElementSibling?.getBoundingClientRect().width ?? timelineWidth ?? MIN_TIMELINE_WIDTH;
+
   return (
     <div className="lab-shell">
-      <PrimaryTabs activeCategoryId={categoryId} env={env} />
+      <PrimaryTabs activeCategoryId={categoryId} />
       <SecondaryTabs categoryId={categoryId} activeSceneId={sceneId} />
-      <div className="lab-body" data-timeline={collapsed ? 'collapsed' : 'expanded'}>
+      <div
+        ref={bodyRef}
+        className="lab-body"
+        data-timeline={collapsed ? 'collapsed' : 'expanded'}
+        data-resizing={resizing}
+        style={timelineWidth === undefined ? undefined : {
+          '--lab-timeline-width': `${timelineWidth}px`,
+        } as CSSProperties}
+      >
         <main className="lab-main">
           <SceneContextProvider value={sceneContext}>
             <Outlet />
           </SceneContextProvider>
         </main>
+        {!collapsed && (
+          <div
+            className="lab-splitter"
+            role="separator"
+            aria-label="调整房间与数据流宽度"
+            aria-orientation="vertical"
+            aria-valuemin={MIN_TIMELINE_WIDTH}
+            aria-valuenow={timelineWidth === undefined ? undefined : Math.round(timelineWidth)}
+            tabIndex={0}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              dragRef.current = {
+                startX: event.clientX,
+                startWidth: currentTimelineWidth(event.currentTarget),
+              };
+              try {
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+              } catch {
+                // 合成 PointerEvent 没有浏览器级 active pointer，拖拽状态仍可继续处理。
+              }
+              setResizing(true);
+            }}
+            onPointerMove={(event) => {
+              const drag = dragRef.current;
+              if (!drag) return;
+              setTimelineWidth(clampTimelineWidth(drag.startWidth + drag.startX - event.clientX));
+            }}
+            onPointerUp={(event) => {
+              dragRef.current = undefined;
+              if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+              setResizing(false);
+            }}
+            onPointerCancel={() => {
+              dragRef.current = undefined;
+              setResizing(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+              event.preventDefault();
+              const direction = event.key === 'ArrowLeft' ? 1 : -1;
+              setTimelineWidth(clampTimelineWidth(
+                currentTimelineWidth(event.currentTarget) + direction * KEYBOARD_RESIZE_STEP,
+              ));
+            }}
+          >
+            <span aria-hidden="true" />
+          </div>
+        )}
         <TimelinePanel
           sources={traceSources}
           collapsed={collapsed}

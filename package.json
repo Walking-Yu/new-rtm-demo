@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port 8080",
+    "dev": "vite --host 127.0.0.1 --port 8080",
+    "dev:https": "vite --mode https --host 127.0.0.1 --port 8080",
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -12,7 +13,7 @@
   },
   "dependencies": {
     "agora-rtc-sdk-ng": "4.24.6",
-    "agora-rtm": "file:./vendor/agora-rtm-2.3.0",
+    "agora-rtm": "^2.3.0",
     "lucide-react": "1.26.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",

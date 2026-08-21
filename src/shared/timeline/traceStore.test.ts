@@ -44,14 +44,14 @@ describe('createTraceStore', () => {
       at: 1_000,
       kind: 'api',
       name: 'acquireLock',
-      summary: 'room-state',
+      summary: 'seats-lock',
       durationMs: 42,
       errorCode: -14008,
       errorMessage: 'LOCK_NOT_EXIST',
     });
 
     const [entry] = store.getEntries();
-    expect(entry.summary).toBe('room-state');
+    expect(entry.summary).toBe('seats-lock');
     expect(entry.durationMs).toBe(42);
     expect(entry.errorCode).toBe(-14008);
     expect(entry.errorMessage).toBe('LOCK_NOT_EXIST');

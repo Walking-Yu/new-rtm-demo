@@ -24,8 +24,5 @@ SOFTWARE.
 
 本许可证只覆盖本仓库自身的 demo 代码与文档。
 
-`vendor/agora-rtm-2.3.0/` 下的 Agora RTM Web SDK **不在本许可证范围内**：其版权归
-声网（Agora Lab, Inc.）所有，遵循该包自带的许可声明（`package.json` 的 `license`
-字段为 `Apache`，另见包内 `README.md`）。它随仓库携带只是因为该版本尚未发布到 npm，
-发布后应改为版本号依赖并删除 `vendor/`。`agora-rtc-sdk-ng` 通过 npm 安装，同样遵循
-其自身许可证。
+通过 npm 安装的 `agora-rtm`、`agora-rtc-sdk-ng` 及其他第三方依赖**不在本许可证
+范围内**，各自遵循对应软件包声明的许可证。

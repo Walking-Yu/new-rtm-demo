@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -30,6 +30,13 @@ function renderApp(
 }
 
 describe('实验室外壳', () => {
+  it('顶栏不展示 App ID 或其 env 来源', () => {
+    renderApp();
+
+    expect(screen.queryByTestId('env-hint')).not.toBeInTheDocument();
+    expect(screen.queryByText(/App ID 来自/)).not.toBeInTheDocument();
+  });
+
   it('一级 tab 条列出全部 8 个分类', () => {
     renderApp();
 
@@ -82,6 +89,54 @@ describe('实验室外壳', () => {
     renderApp();
 
     expect(screen.getByRole('complementary', { name: '时间线' })).toBeInTheDocument();
+  });
+
+  it('房间与数据流之间提供可拖拽分隔器，并支持键盘调整宽度', async () => {
+    const user = userEvent.setup();
+    const { container } = renderApp({ path: '/social/voice-room' });
+    const body = container.querySelector<HTMLElement>('.lab-body')!;
+    const timeline = screen.getByRole('complementary', { name: '时间线' });
+    const separator = screen.getByRole('separator', { name: '调整房间与数据流宽度' });
+    body.getBoundingClientRect = () => ({ width: 1200 } as DOMRect);
+    timeline.getBoundingClientRect = () => ({
+      width: Number.parseFloat(body.style.getPropertyValue('--lab-timeline-width')) || 500,
+    } as DOMRect);
+
+    await user.click(separator);
+    await user.keyboard('{ArrowLeft}');
+    expect(body.style.getPropertyValue('--lab-timeline-width')).toBe('524px');
+
+    await user.keyboard('{ArrowRight}');
+    expect(body.style.getPropertyValue('--lab-timeline-width')).toBe('500px');
+  });
+
+  it('向左或向右拖动分隔器时同步调整两侧宽度，并受最小宽度约束', () => {
+    const { container } = renderApp({ path: '/social/voice-room' });
+    const body = container.querySelector<HTMLElement>('.lab-body')!;
+    const timeline = screen.getByRole('complementary', { name: '时间线' });
+    const separator = screen.getByRole('separator', { name: '调整房间与数据流宽度' });
+    body.getBoundingClientRect = () => ({ width: 1200 } as DOMRect);
+    timeline.getBoundingClientRect = () => ({
+      width: Number.parseFloat(body.style.getPropertyValue('--lab-timeline-width')) || 500,
+    } as DOMRect);
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 1, clientX: 600 });
+    fireEvent.pointerMove(separator, { pointerId: 1, clientX: 550 });
+    fireEvent.pointerUp(separator, { pointerId: 1, clientX: 550 });
+    expect(body.style.getPropertyValue('--lab-timeline-width')).toBe('550px');
+
+    fireEvent.pointerDown(separator, { button: 0, pointerId: 2, clientX: 600 });
+    fireEvent.pointerMove(separator, { pointerId: 2, clientX: 2000 });
+    fireEvent.pointerUp(separator, { pointerId: 2, clientX: 2000 });
+    expect(body.style.getPropertyValue('--lab-timeline-width')).toBe('400px');
+  });
+
+  it('数据流折叠后隐藏分隔器', async () => {
+    const user = userEvent.setup();
+    renderApp({ path: '/social/voice-room' });
+
+    await user.click(screen.getByRole('button', { name: '折叠' }));
+    expect(screen.queryByRole('separator', { name: '调整房间与数据流宽度' })).not.toBeInTheDocument();
   });
 
   it('切换场景只替换主区内容，两级 tab 与时间线面板不动', async () => {

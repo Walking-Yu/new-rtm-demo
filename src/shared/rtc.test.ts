@@ -8,7 +8,12 @@ function fakeSdk() {
   const listeners = new Map<string, (...args: never[]) => void>();
   const remoteAudioTrack = { play: vi.fn(), stop: vi.fn() };
   const remoteVideoTrack = { play: vi.fn(), stop: vi.fn() };
-  const microphone = { setMuted: vi.fn(async () => undefined), close: vi.fn() };
+  const microphoneMediaTrack = { readyState: 'live' as MediaStreamTrackState, muted: false };
+  const microphone = {
+    setMuted: vi.fn(async () => undefined),
+    close: vi.fn(),
+    getMediaStreamTrack: vi.fn(() => microphoneMediaTrack),
+  };
   const camera = { setMuted: vi.fn(async () => undefined), close: vi.fn(), play: vi.fn() };
 
   const client = {
@@ -30,6 +35,7 @@ function fakeSdk() {
     client,
     createClient,
     microphone,
+    microphoneMediaTrack,
     camera,
     remoteAudioTrack,
     remoteVideoTrack,
@@ -170,6 +176,28 @@ describe('加入与离开', () => {
 });
 
 describe('麦克风', () => {
+  it('本地 AudioTrack 为 live 时，即使 publish 失败也判定采集硬件正常', async () => {
+    const sdk = fakeSdk();
+    sdk.client.publish.mockRejectedValueOnce(new Error('NETWORK_PUBLISH_FAILED'));
+    const rtc = createRtcHelper(sdk.deps);
+    await rtc.join(SETTINGS);
+
+    await expect(rtc.publishMicrophone()).rejects.toBeInstanceOf(RtcSdkError);
+
+    expect(rtc.isMicrophoneCaptureHealthy()).toBe(true);
+  });
+
+  it('创建本地 AudioTrack 失败时判定采集硬件异常', async () => {
+    const sdk = fakeSdk();
+    sdk.deps.createMicrophoneAudioTrack.mockRejectedValueOnce(new Error('NOT_READABLE'));
+    const rtc = createRtcHelper(sdk.deps);
+    await rtc.join(SETTINGS);
+
+    await expect(rtc.publishMicrophone()).rejects.toBeInstanceOf(RtcSdkError);
+
+    expect(rtc.isMicrophoneCaptureHealthy()).toBe(false);
+  });
+
   it('发布、静音、取消发布', async () => {
     const sdk = fakeSdk();
     const rtc = createRtcHelper(sdk.deps);

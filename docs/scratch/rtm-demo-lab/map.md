@@ -41,6 +41,15 @@ Label: `wayfinder:map`
 
 ## Decisions so far
 
+- [41 页面级 RTM 会话与事件分发](./issues/41-页面级-rtm-会话与事件分发.md) —— 页面级模块在 login 前一次注册 SDK 事件，只将事件分发给当前角色，并将房间操作与 login/logout 生命周期分离。
+- [42 本地房间目录与唯一 URL payload](./issues/42-本地房间目录与唯一-url-payload.md) —— 目录仅存于 UTC 日期 Local Storage key，邀请仅用严格校验的 `data` Base64URL payload 传输并按 roomId 合并单个房间。
+- [43 Host RTM 深接口收缩](./issues/43-host-rtm-深接口收缩.md) —— Host 房间模块的新接口只暴露订阅、Storage 单写、Presence State、消息和 trace，不承担页面登录或首快照等待。
+- [44 Audience RTM 深接口与 whoNow 准入](./issues/44-audience-rtm-深接口与-whonow-准入.md) —— Audience 只在订阅前用一次 `whoNow` 校验 Host，入房后仅消费事件，且无任何 Storage 写入能力。
+- [45 事件驱动房间状态与单角色客户端](./issues/45-事件驱动房间状态与单角色客户端.md) —— 房间 store 只由 Presence/Storage 事件建立，订阅不等首快照，RTC 结果不回滚麦位归属。
+- [46 归一化入房控制器](./issues/46-归一化入房控制器.md) —— Host 创建与 Audience 三种入口统一执行 Local Storage 落盘、封禁复检、whoNow、挂载和订阅顺序。
+- [47 单角色页面状态与订阅 loading 蒙层](./issues/47-单角色页面状态与订阅-loading-蒙层.md) —— 登录、入口、房间和结束态分层呈现，订阅期间房间 UI/时间线保持挂载并由统一蒙层阻断。
+- [48 旧架构退场与项目契约同步](./issues/48-旧架构退场与项目契约同步.md) —— 正式运行路径已无 orchestrator、Lock、ACK、主动 metadata 读取或角色级 login/logout；用户确认后旧兼容实现及专属测试已删除。
+
 - [01 场景清单与两级导航映射](./issues/01-场景清单与两级导航映射.md) —— 范围缩小为「只做语聊房，其余先空着」：注册表二级条目只留 `id`/`title`/`summary`/`status`，`status` 仅 `ready` | `planned`；未实现场景 tab 可见可点、进去是路线图占位页；`canvas`/`actions`/`initialStatus` 丢弃，`roles`/`capabilities` 归档到 `docs/` 作为实现资料。
 - [02 rtm.ts 契约与目录形态](./issues/02-rtm-ts-契约与目录形态.md) —— `rtm.ts` 导出场景语义方法（B 方案），非 RTM API 扁平包装；契约细节见票内 Answer。
 - [03 npm 依赖可安装化](./issues/03-npm-依赖可安装化.md) —— `agora-rtm@2.3.0-beta.0` 确认未发布到 npm（registry 最高 2.2.4），beta 包 vendor 进仓库并用相对 `file:` 路径；同时把所有 `latest` 依赖锁版本。vendor 目录位置待骨架形态定，合规性待用户内部确认。
@@ -51,7 +60,7 @@ Label: `wayfinder:map`
 - [06 env 注入与本地兜底](./issues/06-env-注入与本地兜底.md) —— `window.__ENV__` **只有 `appId` 一个字段**（不加 region/日志级别/白名单）；优先级 `window.__ENV__` → `import.meta.env.VITE_APP_ID` → 引导页（无源码硬编码兜底）；要求上层页面在加载 bundle **前**同步注入，app 启动读一次快照、不监听变化；新骨架**不做** `SetupPage` 等价物，点 tab 直接进场景；房间 ID 与 uid **随机生成**（`voice-room-<rand>` / `host-<rand>` / `audience-<rand>`），`?room=` / `?uid=` 可覆盖用于联调，不落 storage。
 - [08 各场景客户端数量上限](./issues/08-各场景客户端数量上限.md) —— 无技术上限、只有体验上限，全部端都是真实链路（模拟端方案作废）；默认 **2 端**，更多端的场景在实现时逐个约定；端数**不进注册表**、写在场景目录自己的 `config.ts`；「只有一人开音视频」的约束落在 `rtc.ts` 单实例语义上，UI 灰置只是配合。
 - [10 语聊房迁移切分](./issues/10-语聊房迁移切分.md) —— 一主持人一份、多参与者共享一份 `rtm-<role>.ts`；两份文件间的重复**接受、不抽共享层**；`protocol.ts`（envelope/去重）与 `RoomStateRepository.mutate`（Lock + majorRevision）**下沉进 `rtm-*.ts`**，快照类型与 17 个纯函数转移**留在场景目录**；骨架目录形态与 `vendor/` 置于仓库根一并定下；遗留 `demos/voice-room/` 与根 `src/` 本阶段不删。
-- [11 开源合规与交付清单](./issues/11-开源合规与交付清单.md) —— 包已核验为 `2.3.0` 正式版但仍未发布到 npm，vendor 进 `vendor/agora-rtm-2.3.0/` 并用相对 `file:` 路径；LICENSE 用 MIT；README 必须声明三件事（多实例文档未保证、治理动作不构成信任边界、默认 appId 无 token 仅供体验）；两站域名白名单**待核实**。
+- [11 开源合规与交付清单](./issues/11-开源合规与交付清单.md) —— 历史上曾使用本地 vendor 和体验 App ID；当前 SDK 已改为 npm 安装，真实 App ID 只通过本地或部署环境注入，不进入开源仓库；LICENSE 使用 MIT，两站域名白名单**待核实**。
 - **charting 已完成** —— 上述 11 条决策已收敛进 [`spec.md`](./spec.md)，并拆成实现票 [`issues/12`–`25`](./issues/)。本图到此不再新增决策票；后续实现遇到需要重新决策的问题，回头补票并同步修 spec。
 
 ## Not yet specified

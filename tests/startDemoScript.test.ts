@@ -28,7 +28,7 @@ describe('start-demo.sh', () => {
     expect(result.stdout).toContain('agora-rtc-sdk-ng@4.24.6');
   });
 
-  it('documents port 8080 as the default public URL', () => {
+  it('documents LAN HTTPS on port 8080 as the default startup mode', () => {
     const script = resolve(process.cwd(), 'start-demo.sh');
     const result = spawnSync(script, ['--help'], {
       cwd: process.cwd(),
@@ -36,9 +36,21 @@ describe('start-demo.sh', () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Default URL: http://127.0.0.1:8080/');
+    expect(result.stdout).toContain('Default URL: https://<LAN IPv4>:8080/');
+    expect(result.stdout).toContain('Default listen address: 0.0.0.0');
+    expect(result.stdout).toContain('--http');
     expect(result.stdout).toContain('--https');
     expect(result.stdout).toContain('--both');
+    expect(result.stdout).toContain('--no-open');
+  });
+
+  it('defaults to HTTPS on all interfaces without opening a browser', () => {
+    const script = readFileSync(resolve(process.cwd(), 'start-demo.sh'), 'utf8');
+
+    expect(script).toMatch(/^server_mode="https"$/m);
+    expect(script).toMatch(/^open_browser="false"$/m);
+    expect(script).toContain('demo_host=${RTM_DEMO_HOST:-0.0.0.0}');
+    expect(script).toContain('--http) server_mode="http" ;;');
   });
 
   it('supports HTTP, HTTPS and dual-server development modes', () => {

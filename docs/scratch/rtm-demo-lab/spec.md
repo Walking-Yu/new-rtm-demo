@@ -8,7 +8,7 @@
 
 本文是 charting 阶段的产出，把地图的 10 条前置决策与 11 张票的答案收敛成一份可建造的 spec。**决策票是依据，本文是唯一的建造依据** —— 两者冲突时以本文为准，并回头修票。
 
-本文**刻意不含文件路径与代码片段**：它们会很快过时，落地形态由实现票与建造时的实际代码决定。需要查阅早期含目录树与接口定义的版本时，见 `docs/superpowers/specs/2026-08-06-rtm-demo-lab-skeleton-design.md`（历史归档，不再更新）。
+本文的**主体架构设计刻意不含文件路径与代码片段**：它们会很快过时，落地形态由实现票与建造时的实际代码决定。后续覆盖决策可以用稳定的公开命令定义外部契约。需要查阅早期含目录树与接口定义的版本时，见 `docs/superpowers/specs/2026-08-06-rtm-demo-lab-skeleton-design.md`（历史归档，不再更新）。
 
 ## 2026-08-18 语聊房覆盖决策
 
@@ -19,6 +19,61 @@
 - 房间 Storage 只含 `hostUserId`、`announcement`、`seats`、`forcedMutedUserIds`，不使用 Lock、管理员/排麦额外频道或主动 `getChannelMetadata()`。
 - 订阅 pending 只跟随 SDK `subscribe()`，Presence/Storage 首快照完全由事件消费。
 - 麦位只表达归属，RTC 失败不回滚麦位。
+
+---
+
+## 2026-08-26 默认 HTTPS 启动契约
+
+### 目标
+
+本地开发者直接运行 `./start-demo.sh` 时，应得到一台可供同一局域网其他设备访问的 HTTPS 开发服务器，不再需要记忆 `RTM_DEMO_HOST=0.0.0.0`、`--https` 和 `--no-open` 三项额外配置。默认行为必须完整等同于：
+
+```bash
+RTM_DEMO_HOST=0.0.0.0 ./start-demo.sh --https --no-open
+```
+
+默认服务只监听 HTTPS `8080`，监听地址为 `0.0.0.0`，启动后不自动打开浏览器。脚本继续自动发现一条非内部局域网 IPv4 地址，将该地址写入本地开发证书，并在日志中打印远端设备可访问的完整 HTTPS URL。
+
+### 命令契约
+
+| 命令 | 协议与端口 | 默认监听地址 | 自动打开浏览器 |
+| --- | --- | --- | --- |
+| `./start-demo.sh` | HTTPS `8080` | `0.0.0.0` | 否 |
+| `./start-demo.sh --https` | HTTPS `8080` | `0.0.0.0` | 否 |
+| `./start-demo.sh --http` | HTTP `8080` | `0.0.0.0` | 否 |
+| `./start-demo.sh --both` | HTTP `8080` + HTTPS `8443` | `0.0.0.0` | 否 |
+
+`--https` 保留为显式且向后兼容的 HTTPS-only 入口。新增 `--http`，确保默认模式改为 HTTPS 后，普通 HTTP-only 开发入口仍然存在。`--both` 继续同时启动两个服务。`--no-open` 保留为兼容参数；因为所有模式默认都不打开浏览器，所以它不再改变行为，也不得报错。
+
+本次不新增 `--open`。需要打开页面时，开发者使用启动日志打印的 URL；是否增加显式自动打开能力，留到出现真实需求后再设计。
+
+### 环境变量覆盖
+
+默认值变化不改变现有环境变量的优先级。显式传入的 `RTM_DEMO_HOST`、`RTM_DEMO_PUBLIC_HOST`、`RTM_DEMO_PORT` 和 `RTM_DEMO_HTTPS_PORT` 继续覆盖脚本默认值。
+
+其中 `RTM_DEMO_HOST` 控制 Vite 监听地址，缺省为 `0.0.0.0`；`RTM_DEMO_PUBLIC_HOST` 控制证书包含的 IPv4 地址和启动日志中的访问地址，缺省由脚本自动发现。两者职责保持分离，避免把 `0.0.0.0` 当作用户实际访问地址写入 URL。
+
+### HTTPS 证书与失败行为
+
+HTTPS 默认化不改变安全约束：脚本可以调用 `mkcert` 生成本地证书，但不得自动安装根 CA。首次使用者必须自行安装 `mkcert` 并明确执行 `mkcert -install`；远端电脑或手机也必须安装并信任启动日志所指向的 `rootCA.pem`。
+
+缺少 `mkcert` 时，默认启动应立即失败，打印安装与信任提示，不得静默降级到 HTTP。证书和私钥继续只写入被 gitignore 的 `.cert/`；可以向远端设备分发 `rootCA.pem`，不得分发 `rootCA-key.pem` 或开发服务器私钥。局域网 IPv4 发生变化后，重新启动脚本以生成包含新地址的证书。
+
+### 文档与测试验收
+
+启动脚本帮助信息、环境检查输出、README 常用命令以及 agent 项目约定必须同步反映新默认值。`AGENTS.md` 与 `CLAUDE.md` 修改后必须保持逐字一致。
+
+测试先固定以下行为，再修改脚本：
+
+1. `--help` 将默认 URL 描述为 HTTPS `8080`，并列出 `--http`、`--https`、`--both` 和 `--no-open`。
+2. 脚本源码的默认模式是 HTTPS、默认监听地址是 `0.0.0.0`、默认不打开浏览器。
+3. HTTP-only、HTTPS-only 和双服务三种显式模式仍可选择。
+4. 现有证书生成、单入口构建和 E2E 环境隔离契约不发生变化。
+5. agent 双入口同步测试通过，证明 `AGENTS.md` 与 `CLAUDE.md` 逐字一致。
+
+### 非目标
+
+本次不让启动脚本读取 `.env.local` 中的 shell 变量；该文件仍由 Vite 用于 `VITE_APP_ID` 等前端配置。本次也不自动安装 CA、不处理公网暴露或路由器端口映射、不修改生产部署方式，并且不改变 `npm run dev` 与 `npm run dev:https` 的底层职责。
 
 ---
 

@@ -30,9 +30,10 @@
 在仓库根目录执行：
 
 ```bash
-./start-demo.sh              # 缺依赖时先安装，启动 http://127.0.0.1:8080/ 并打开浏览器
-./start-demo.sh --no-open    # 只启动服务
-./start-demo.sh --https      # HTTPS 8080；使用 mkcert 本地证书
+./start-demo.sh              # 缺依赖时先安装，默认启动局域网 HTTPS 8080，不打开浏览器
+./start-demo.sh --no-open    # 兼容旧命令；当前默认已经不打开浏览器
+./start-demo.sh --http       # HTTP 8080
+./start-demo.sh --https      # 显式 HTTPS 8080；使用 mkcert 本地证书
 ./start-demo.sh --both       # HTTP 8080 + HTTPS 8443
 ./start-demo.sh --check      # 校验 Node >= 20 并打印实际解析到的 SDK 版本
 npm run dev                  # 开发服务器（端口 8080）
@@ -53,7 +54,7 @@ npx playwright test --project=desktop-chromium -g "两台手机"
 
 Playwright 无头运行，自己拉起 dev server（端口 4173）。优先使用 `~/.agent-browser/browsers/chrome-148.0.7778.97`，不存在时回退到自带浏览器。
 
-局域网麦克风/摄像头要求可信 HTTPS。`start-demo.sh --https/--both` 用 `mkcert` 为本机和局域网 IPv4 生成 `.cert/dev.pem` 与 `.cert/dev-key.pem`；`.cert/` 必须保持 gitignore。脚本不得自动安装根 CA，用户需明确执行 `mkcert -install`；远端设备也必须单独信任启动日志打印的 `rootCA.pem`。普通 HTTP 入口继续保留，但浏览器可能禁用媒体采集和 Clipboard API。
+局域网麦克风/摄像头要求可信 HTTPS。`start-demo.sh` 默认监听 `0.0.0.0`、启动 HTTPS 8080 且不打开浏览器；`--https` 显式选择相同行为，`--http` 保留普通 HTTP 入口，`--both` 同时启动 HTTP 8080 与 HTTPS 8443。HTTPS 模式用 `mkcert` 为本机和局域网 IPv4 生成 `.cert/dev.pem` 与 `.cert/dev-key.pem`；`.cert/` 必须保持 gitignore。脚本不得自动安装根 CA，用户需明确执行 `mkcert -install`；远端设备也必须单独信任启动日志打印的 `rootCA.pem`。普通 HTTP 下浏览器可能禁用媒体采集和 Clipboard API。
 
 Playwright 使用独立的 `e2e` mode，`vite.config.ts` 在该 mode 下设置 `envDir: false`，因此测试不会加载开发者本机的 `.env.local`。普通 `npm run dev` 仍按 Vite 默认规则加载 `.env.local`，两者不要合并。
 

@@ -75,15 +75,18 @@ cp .env.example .env.local   # 填写 VITE_APP_ID=<你的 App ID>
 npm run dev          # http://127.0.0.1:8080/
 ```
 
-局域网需要麦克风、摄像头或 Clipboard API 时使用 HTTPS。启动脚本支持三种模式：
+启动脚本默认监听所有 IPv4 网卡，在 HTTPS `8080` 上提供服务，并且不自动打开浏览器。日志会打印其他设备可访问的局域网 IPv4 URL：
 
 ```bash
-RTM_DEMO_HOST=0.0.0.0 ./start-demo.sh             # HTTP 8080
-RTM_DEMO_HOST=0.0.0.0 ./start-demo.sh --https     # HTTPS 8080
-RTM_DEMO_HOST=0.0.0.0 ./start-demo.sh --both      # HTTP 8080 + HTTPS 8443
+./start-demo.sh             # 默认：HTTPS 8080，监听 0.0.0.0，不打开浏览器
+./start-demo.sh --https     # 显式 HTTPS 8080
+./start-demo.sh --http      # HTTP 8080
+./start-demo.sh --both      # HTTP 8080 + HTTPS 8443
 ```
 
-HTTPS 模式使用 `mkcert` 为 `localhost`、`127.0.0.1` 和自动发现的局域网 IPv4 地址生成证书到 `.cert/`。首次使用需由用户自行执行 `mkcert -install`；其他电脑或手机还需要安装并信任启动日志中打印的 `rootCA.pem`。不要提交 `.cert/`、私钥或本地 CA。
+`--no-open` 作为旧命令的兼容参数继续接受，但默认行为本身已经不会打开浏览器。只允许本机访问时可显式设置 `RTM_DEMO_HOST=127.0.0.1`。
+
+局域网麦克风、摄像头或 Clipboard API 需要可信 HTTPS。HTTPS 模式使用 `mkcert` 为 `localhost`、`127.0.0.1` 和自动发现的局域网 IPv4 地址生成证书到 `.cert/`。首次使用需由用户自行执行 `mkcert -install`；其他电脑或手机还需要安装并信任启动日志中打印的 `rootCA.pem`。不要提交 `.cert/`、私钥或本地 CA。
 
 App ID 有两种配置方式：
 

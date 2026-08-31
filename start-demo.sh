@@ -5,17 +5,20 @@
 set -eu
 
 usage() {
-  echo "Usage: ./start-demo.sh [--https|--both] [--no-open] [--check|--help]"
-  echo "Default URL: http://127.0.0.1:8080/"
+  echo "Usage: ./start-demo.sh [--http|--https|--both] [--no-open] [--check|--help]"
+  echo "Default URL: https://<LAN IPv4>:8080/"
+  echo "Default listen address: 0.0.0.0"
+  echo "HTTP only: ./start-demo.sh --http"
   echo "HTTPS only: ./start-demo.sh --https"
   echo "HTTP + HTTPS: ./start-demo.sh --both"
 }
 
-server_mode="http"
-open_browser="true"
+server_mode="https"
+open_browser="false"
 check_only="false"
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --http) server_mode="http" ;;
     --https) server_mode="https" ;;
     --both) server_mode="both" ;;
     --no-open) open_browser="false" ;;
@@ -67,11 +70,12 @@ if [ "$check_only" = "true" ]; then
   echo "Demo environment is ready (Node $(node --version))."
   echo "Scenario lab: root src/ (scenes/voice-room)"
   echo "SDKs: agora-rtm@$rtm_version, agora-rtc-sdk-ng@$rtc_version"
-  echo "Default URL: http://127.0.0.1:8080/"
+  echo "Default URL: https://<LAN IPv4>:8080/"
+  echo "Default listen address: 0.0.0.0"
   exit 0
 fi
 
-demo_host=${RTM_DEMO_HOST:-127.0.0.1}
+demo_host=${RTM_DEMO_HOST:-0.0.0.0}
 http_port=${RTM_DEMO_PORT:-8080}
 demo_public_host=${RTM_DEMO_PUBLIC_HOST:-}
 if [ -z "$demo_public_host" ]; then

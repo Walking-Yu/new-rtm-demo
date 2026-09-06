@@ -82,6 +82,7 @@ npm run dev          # http://127.0.0.1:8080/
 ./start-demo.sh --https     # 显式 HTTPS 8080
 ./start-demo.sh --http      # HTTP 8080
 ./start-demo.sh --both      # HTTP 8080 + HTTPS 8443
+./start-demo.sh --tunnel dev.example.com   # 挂在 Cloudflare Tunnel 后面，见「远程开发与 Cloudflare 部署」
 ```
 
 `--no-open` 作为旧命令的兼容参数继续接受，但默认行为本身已经不会打开浏览器。只允许本机访问时可显式设置 `RTM_DEMO_HOST=127.0.0.1`。
@@ -114,6 +115,78 @@ npm run test:e2e     # playwright，无头
 ```
 
 **两端都会真实播放音频，人工验证时请戴耳机。**
+
+---
+
+## 远程开发与 Cloudflare 部署
+
+本仓库是纯静态单页应用，`npm run build` 只产出 `dist/`，没有服务端。推荐两层环境：
+
+- **隧道层**：远程服务器上跑开发服务器，用 Cloudflare Tunnel 暴露成自己的域名，边改边看，手机直接访问。
+- **预览层**：Cloudflare Pages 绑定本仓库，每个分支自动构建出独立预览地址，`master` 作为基线；合并前对照验收。
+
+两层都由 Cloudflare 提供可信 HTTPS，不再需要 mkcert，也不需要让手机信任本地根 CA。
+
+### 隧道模式：远程服务器边改边看
+
+服务器上启动：
+
+```bash
+./start-demo.sh --tunnel dev.example.com
+```
+
+该模式只跑普通 HTTP，默认监听 `127.0.0.1:8080`，TLS 由隧道终结。域名经环境变量 `RTM_DEMO_TUNNEL_HOST` 传给 `vite.config.ts`，用来放行该 Host 并让热更新走 `wss://<域名>:443`；不设该变量时 Vite 行为与之前完全一致。
+
+cloudflared 一次性配置（同一台服务器）：
+
+```bash
+cloudflared tunnel login                              # 浏览器授权你的 Cloudflare 账号与域名
+cloudflared tunnel create rtm-lab
+cloudflared tunnel route dns rtm-lab dev.example.com  # 自动创建 CNAME 记录
+```
+
+`~/.cloudflared/config.yml`：
+
+```yaml
+tunnel: rtm-lab
+credentials-file: /home/<user>/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: dev.example.com
+    service: http://127.0.0.1:8080
+  - service: http_status:404
+```
+
+```bash
+cloudflared tunnel run rtm-lab          # 前台运行
+sudo cloudflared service install        # 或安装成 systemd 服务常驻
+```
+
+App ID 仍从 `.env.local` 读取。隧道打开后域名全网可达，App ID 会随页面暴露，建议在 Cloudflare Zero Trust → Access → Applications 给该域名加一条策略，只放行自己的邮箱；不用时停掉隧道即可。
+
+### Cloudflare Pages：分支预览与基线
+
+控制台 Workers & Pages → Create → Pages → Connect to Git，选择本仓库，然后：
+
+| 设置项 | 值 |
+| --- | --- |
+| 构建命令 | `npm run build` |
+| 输出目录 | `dist` |
+| 生产分支 | `master` |
+| 环境变量 | `VITE_APP_ID=<你的 App ID>`，Production 与 Preview 都要设 |
+| Node 版本 | 读取根目录 `.node-version`；若未生效再设环境变量 `NODE_VERSION=22` |
+| 自定义域名 | 在 Custom domains 里绑定 `lab.example.com` |
+
+之后每次推送都会自动构建：`master` 更新到自定义域名，其他分支得到 `<分支名>.<项目名>.pages.dev` 预览地址，开 PR 时 Cloudflare 机器人会把地址评论到 PR 里。
+
+`public/_redirects` 把所有路径回落到 `index.html`，保证 `BrowserRouter` 的深层路由与刷新可用；`public/` 下的文件会被原样复制进 `dist/`。
+
+预览地址同样公开，同样建议用 Access 保护 `*.pages.dev` 与自定义域名。
+
+### 持续集成
+
+`.github/workflows/ci.yml` 在每次推送与 PR 上跑 `npm test`、`npm run build` 与 Playwright e2e。e2e 用占位 App ID，刻意不连真实 Agora；真实信令链路仍靠预览页人工戴耳机验收。
+
+`package-lock.json` 必须包含所有平台的可选原生依赖（rolldown、TypeScript、lightningcss 的各平台二进制），否则在 Linux 构建机上 `npm ci` 会装出不能运行的产物。若本机 npm 只写入了当前平台，用较新的 npm 重新生成：`npx npm@12 install --package-lock-only`。
 
 ---
 

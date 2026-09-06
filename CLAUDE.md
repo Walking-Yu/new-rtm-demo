@@ -23,6 +23,8 @@
 
 本仓库只有**一个应用** —— 根目录 `src/` 下的 RTM 场景实验室（8 个一级分类、23 个二级场景，唯一已实现的是语聊房）。单入口 `index.html`，单份 `package.json` / `vite.config.ts` / `playwright.config.ts`，单套 e2e（`e2e/lab.spec.ts`）。
 
+根目录 `public/` 只放随 `dist/` 原样复制的静态托管文件（目前只有 Cloudflare Pages 用的 `_redirects`），不放源码。`.github/workflows/ci.yml` 在推送与 PR 上跑单元测试、构建和 e2e。`package-lock.json` 必须包含所有平台的可选原生依赖，只含当前平台的 lockfile 会让 Linux 构建机上的 `npm ci` 装出不能运行的产物。
+
 `src/` 下只有四个顶层目录：`app/`（外壳）、`scenes/`（场景）、`shared/`（时间线与 RTC 脚手架）、`test/`（vitest 全局 setup）。**不要引入与 `src/` 平行的第二套应用代码或第二个入口页** —— 单入口是当前架构的前提，`tests/startDemoScript.test.ts` 断言了「不配置多入口」。
 
 ## 常用命令
@@ -35,6 +37,7 @@
 ./start-demo.sh --http       # HTTP 8080
 ./start-demo.sh --https      # 显式 HTTPS 8080；使用 mkcert 本地证书
 ./start-demo.sh --both       # HTTP 8080 + HTTPS 8443
+./start-demo.sh --tunnel dev.example.com   # 隧道模式：HTTP 127.0.0.1:8080，TLS 由 Cloudflare Tunnel 终结
 ./start-demo.sh --check      # 校验 Node >= 20 并打印实际解析到的 SDK 版本
 npm run dev                  # 开发服务器（端口 8080）
 npm run dev:https            # HTTPS 开发服务器（端口 8080，需先生成 .cert）
@@ -54,7 +57,7 @@ npx playwright test --project=desktop-chromium -g "两台手机"
 
 Playwright 无头运行，自己拉起 dev server（端口 4173）。优先使用 `~/.agent-browser/browsers/chrome-148.0.7778.97`，不存在时回退到自带浏览器。
 
-局域网麦克风/摄像头要求可信 HTTPS。`start-demo.sh` 默认监听 `0.0.0.0`、启动 HTTPS 8080 且不打开浏览器；`--https` 显式选择相同行为，`--http` 保留普通 HTTP 入口，`--both` 同时启动 HTTP 8080 与 HTTPS 8443。HTTPS 模式用 `mkcert` 为本机和局域网 IPv4 生成 `.cert/dev.pem` 与 `.cert/dev-key.pem`；`.cert/` 必须保持 gitignore。脚本不得自动安装根 CA，用户需明确执行 `mkcert -install`；远端设备也必须单独信任启动日志打印的 `rootCA.pem`。普通 HTTP 下浏览器可能禁用媒体采集和 Clipboard API。
+局域网麦克风/摄像头要求可信 HTTPS。`start-demo.sh` 默认监听 `0.0.0.0`、启动 HTTPS 8080 且不打开浏览器；`--https` 显式选择相同行为，`--http` 保留普通 HTTP 入口，`--both` 同时启动 HTTP 8080 与 HTTPS 8443。HTTPS 模式用 `mkcert` 为本机和局域网 IPv4 生成 `.cert/dev.pem` 与 `.cert/dev-key.pem`；`.cert/` 必须保持 gitignore。脚本不得自动安装根 CA，用户需明确执行 `mkcert -install`；远端设备也必须单独信任启动日志打印的 `rootCA.pem`。普通 HTTP 下浏览器可能禁用媒体采集和 Clipboard API。`--tunnel <域名>` 只跑 HTTP 并默认监听 `127.0.0.1`，域名经 `RTM_DEMO_TUNNEL_HOST` 传给 `vite.config.ts` 放行该 Host 并让 HMR 走 `wss://<域名>:443`；证书由隧道提供，不生成 `.cert/`。远程服务器开发、Cloudflare Pages 分支预览与 CI 的完整步骤见 README「远程开发与 Cloudflare 部署」。
 
 Playwright 使用独立的 `e2e` mode，`vite.config.ts` 在该 mode 下设置 `envDir: false`，因此测试不会加载开发者本机的 `.env.local`。普通 `npm run dev` 仍按 Vite 默认规则加载 `.env.local`，两者不要合并。
 
@@ -164,6 +167,8 @@ Vitest + jsdom + Testing Library，测试文件以 `*.test.ts(x)` 与源码同�
 
 - `host/rtm.test.ts` / `audience/rtm.test.ts` 里的页面级 RTM port 替身——记录 `subscribe`、`publish`、Presence 和 Storage 的原子调用，用来断言业务桥接层到角色 `rtm.ts` 再到页面级 seam 的完整行为。
 - `testing.ts` 的 `createVoiceRoomFakes()`——给渲染真实场景的测试用（外壳路由、场景 UI）。场景一挂载就自动连接，不注入替身就会去连真实 RTM。它只需要「不发网络请求、能被驱动」，所以是无副作用空实现加少量开关。
+
+房间目录只保留 7 天内的记录，测试夹具里的 `createdAt` 与目录 key 必须相对当前时间生成（`directoryStorageKey(new Date(...))`），写死日期会在一周后静默失败。
 
 E2E 使用占位 App ID，**刻意不验证**真实 Agora 连通性；完整真实链路仍需用有效项目凭证人工验收。
 

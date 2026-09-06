@@ -5,22 +5,34 @@
 set -eu
 
 usage() {
-  echo "Usage: ./start-demo.sh [--http|--https|--both] [--no-open] [--check|--help]"
+  echo "Usage: ./start-demo.sh [--http|--https|--both|--tunnel <hostname>] [--no-open] [--check|--help]"
   echo "Default URL: https://<LAN IPv4>:8080/"
   echo "Default listen address: 0.0.0.0"
   echo "HTTP only: ./start-demo.sh --http"
   echo "HTTPS only: ./start-demo.sh --https"
   echo "HTTP + HTTPS: ./start-demo.sh --both"
+  echo "Behind Cloudflare Tunnel: ./start-demo.sh --tunnel dev.example.com"
+  echo "  (plain HTTP on 127.0.0.1:8080; point cloudflared at http://127.0.0.1:8080)"
 }
 
 server_mode="https"
 open_browser="false"
 check_only="false"
+tunnel_host=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --http) server_mode="http" ;;
     --https) server_mode="https" ;;
     --both) server_mode="both" ;;
+    --tunnel)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "Error: --tunnel requires a hostname, e.g. --tunnel dev.example.com" >&2
+        exit 2
+      fi
+      server_mode="tunnel"
+      tunnel_host="$2"
+      shift
+      ;;
     --no-open) open_browser="false" ;;
     --check) check_only="true" ;;
     --help|-h)
@@ -100,6 +112,15 @@ prepare_https_certificate() {
 }
 
 echo "Starting Agora RTM scenario lab..."
+
+if [ "$server_mode" = "tunnel" ]; then
+  # 隧道终结 TLS，本地只跑 HTTP；默认只监听回环地址，cloudflared 与开发服务器同机。
+  # 域名交给 vite.config.ts 放行并配置 HMR，不在这里生成任何证书。
+  tunnel_bind_host=${RTM_DEMO_HOST:-127.0.0.1}
+  echo "Tunnel URL: https://$tunnel_host/"
+  echo "Local origin for cloudflared: http://$tunnel_bind_host:$http_port/"
+  RTM_DEMO_TUNNEL_HOST="$tunnel_host" exec npm run dev -- --host "$tunnel_bind_host" --port "$http_port" --strictPort
+fi
 
 if [ "$server_mode" = "http" ]; then
   echo "HTTP URL: http://$demo_public_host:$http_port/"

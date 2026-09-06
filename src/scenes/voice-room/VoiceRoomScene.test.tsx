@@ -9,6 +9,10 @@ import type { AppRtmSession } from './app-rtm';
 import { parseVoiceRoomUrl, VoiceRoomScene } from './VoiceRoomScene';
 import { encodeVoiceRoomUrlPayload, type VoiceRoomUrlPayload } from './voice-room-url';
 import source from './VoiceRoomScene.tsx?raw';
+import { directoryStorageKey } from './browser-room-directory';
+
+/** 房间目录只保留 7 天内的记录，夹具日期必须相对当前时间，写死会在一周后静默过期。 */
+const roomCreatedAt = Date.now() - 60 * 60 * 1000;
 
 const env = { configured: true, appId: 'test-app-id', source: 'window.__ENV__' } as const;
 
@@ -21,10 +25,10 @@ function deferred() {
 function payload(): VoiceRoomUrlPayload {
   return {
     localStorage: {
-      'record-channel-list-20260818': {
+      [directoryStorageKey(new Date(roomCreatedAt))]: {
         roomId: 'voice-room-1', roomName: '邀请房间', hostUserId: 'host-1',
-        createdAt: Date.parse('2026-08-18T01:00:00.000Z'),
-        updatedAt: Date.parse('2026-08-18T01:00:00.000Z'), banUserIds: [], status: 'active',
+        createdAt: roomCreatedAt,
+        updatedAt: roomCreatedAt, banUserIds: [], status: 'active',
       },
     },
     role: 'audience',

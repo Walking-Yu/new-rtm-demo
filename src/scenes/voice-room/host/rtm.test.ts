@@ -29,6 +29,7 @@ function setup() {
       presenceStates.push(state);
     },
     async removePresenceState() {},
+    async removeRoomMetadata(roomId) { operations.push(`remove:${roomId}`); },
     async setRoomMetadata(roomId, data, majorRevision) {
       operations.push(`metadata:${roomId}:${data.map(({ key }) => key).join(",")}:${majorRevision ?? "none"}`);
     },
@@ -93,6 +94,7 @@ function setup() {
 
   return {
     rtm,
+    port,
     operations,
     presenceStates,
     published,
@@ -121,6 +123,29 @@ function storageEvent(majorRevision: number): RTMEvents.StorageEvent {
     data: { majorRevision, totalCount: 0, metadata: {} },
   };
 }
+
+describe("房间数据清理", () => {
+  it("等待在途写入完成再删除，并阻止解散后的写入及空快照初始化", async () => {
+    const context = setup();
+    let finish!: () => void;
+    context.port.setRoomMetadata = async () => {
+      await new Promise<void>(resolve => { finish = resolve; });
+      context.operations.push('write:done');
+    };
+    const writing = context.rtm.updateAnnouncement('最后一条公告');
+    const cleaning = context.rtm.clearRoomData();
+    const second = context.rtm.clearRoomData();
+    expect(cleaning).toBe(second);
+    expect(context.operations).not.toContain('remove:room-1');
+    await expect(context.rtm.updateAnnouncement('迟到公告')).rejects.toThrow('已解散');
+    await expect(context.rtm.initializeRoom([], 0)).rejects.toThrow('已解散');
+    finish();
+    await writing;
+    await cleaning;
+    expect(context.operations).toEqual(['write:done', 'remove:room-1']);
+    expect(context.rtm.getTraces()).toContainEqual(expect.objectContaining({ name: 'storage.removeChannelMetadata' }));
+  });
+});
 
 describe("HostRoomRtm", () => {
   it("使用单调高精度时钟计算 API durationMs", async () => {

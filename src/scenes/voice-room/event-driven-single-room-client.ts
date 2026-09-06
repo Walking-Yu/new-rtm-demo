@@ -86,6 +86,7 @@ export interface SingleRoomView {
   noticeVersion: number;
   hostTemporarilyAway: boolean;
   endedReason: string | undefined;
+  roomCleanupError: string | undefined;
 }
 
 export interface SingleRoomClientOptions {
@@ -98,9 +99,9 @@ export interface SingleRoomClientOptions {
   role: SingleRoomRole;
   session: AppRtmSession;
   createRtc?: () => RtcHelper;
-  onBanUser?: (userId: string) => void;
+  onBanUser?: (userId: string) => void | Promise<void>;
   onSelfBanned?: () => void;
-  onRoomDissolved?: () => void;
+  onRoomDissolved?: () => void | Promise<void>;
   now?: () => number;
 }
 
@@ -193,6 +194,7 @@ export class SingleRoomClient {
   private readonly pendingJoinedUsers = new Set<string>();
   private snapshot: RoomSnapshot;
   private hasAuthoritativeSnapshot = false;
+  private subscribePromise?: Promise<void>;
   private onlineUsers: readonly string[] = [];
   private memberNames: Readonly<Record<string, string>>;
   private memberMuted: Readonly<Record<string, boolean>>;
@@ -214,6 +216,9 @@ export class SingleRoomClient {
   private noticeVersion = 0;
   private hostTemporarilyAway = false;
   private endedReason: string | undefined;
+  private roomDissolved = false;
+  private roomCleanupError: string | undefined;
+  private dissolvePromise?: Promise<void>;
   private publishedSeatId: string | undefined;
   private rtcJoined = false;
   private runtimeStarted = false;
@@ -321,6 +326,7 @@ export class SingleRoomClient {
       noticeVersion: this.noticeVersion,
       hostTemporarilyAway: this.hostTemporarilyAway,
       endedReason: this.endedReason,
+      roomCleanupError: this.roomCleanupError,
     };
     return this.viewSnapshot;
   }
@@ -347,11 +353,31 @@ export class SingleRoomClient {
     this.subscribing = true;
     this.publish();
     try {
-      await this.rtm().subscribeRoom();
+      this.subscribePromise = this.rtm().subscribeRoom();
+      await this.subscribePromise;
     } finally {
       this.subscribing = false;
       this.publish();
     }
+  }
+
+  /** Named admission waits for the actual room's authoritative four-key state. */
+  waitUntilReady(timeoutMs = 12000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let cleanup = () => {};
+      const check = () => {
+        if (this.stopped || this.endedReason || this.error) {
+          cleanup(); reject(new Error(this.endedReason ?? this.error ?? '加入房间已取消')); return;
+        }
+        if (this.hasAuthoritativeSnapshot && this.snapshot.hostUserId === this.options.hostUserId) {
+          cleanup(); resolve();
+        }
+      };
+      const timer = setTimeout(() => { cleanup(); reject(new Error('房间准备超时，请重试确认')); }, timeoutMs);
+      const off = this.subscribe(check);
+      cleanup = () => { clearTimeout(timer); off(); };
+      check();
+    });
   }
 
   startRoomRuntime(): void {
@@ -379,6 +405,8 @@ export class SingleRoomClient {
     this.clearRequestTimer();
     this.clearHostQueueTimers();
     if (reason) this.endedReason = reason;
+    this.publish();
+    try { await this.subscribePromise; } catch { /* Clean a partially subscribed room. */ }
     try { await this.rtc.leave(); } catch { /* 清理失败不覆盖退出语义。 */ }
     this.rtcJoined = false;
     this.runtimeStarted = false;
@@ -546,19 +574,39 @@ export class SingleRoomClient {
 
   async banMember(userId: string): Promise<void> {
     this.requireHost();
-    this.options.onBanUser?.(userId);
+    await this.options.onBanUser?.(userId);
     await this.forceLeave(userId);
     await this.hostRtm!.banMember(userId);
   }
 
-  async dissolveRoom(): Promise<void> {
+  dissolveRoom(): Promise<void> {
+    if (this.dissolvePromise) return this.dissolvePromise;
     this.requireHost();
-    this.options.onRoomDissolved?.();
+    this.dissolvePromise = this.endHostRoom().finally(() => { this.dissolvePromise = undefined; });
+    return this.dissolvePromise;
+  }
+
+  private async endHostRoom(): Promise<void> {
+    await this.options.onRoomDissolved?.();
+    this.roomDissolved = true;
     try {
       await this.hostRtm!.dissolveRoom();
     } finally {
+      // A failed notification must not skip data cleanup or keep an ended room open.
+      try { await this.retryRoomCleanup(); } catch { /* Exposed separately; the room remains ended. */ }
       await this.leaveRoom("房间已解散");
     }
+  }
+
+  async retryRoomCleanup(): Promise<void> {
+    if (this.options.role !== 'host' || !this.roomDissolved) throw new Error('只能清理已确认解散的房间');
+    try {
+      await this.hostRtm!.clearRoomData();
+      this.roomCleanupError = undefined;
+    } catch (error) {
+      this.roomCleanupError = '房间已解散，数据清理未完成';
+      throw error;
+    } finally { this.publish(); }
   }
 
   async updateAnnouncement(announcement: string): Promise<void> {
@@ -588,14 +636,14 @@ export class SingleRoomClient {
   }
 
   private async handleRoomMetadataChanged(result: ChannelMetadataResult, eventType: string): Promise<void> {
-    if (this.hasAuthoritativeSnapshot && result.majorRevision < this.snapshot.majorRevision) return;
+    if (this.stopped || this.roomDissolved || (this.hasAuthoritativeSnapshot && result.majorRevision < this.snapshot.majorRevision)) return;
     if (this.options.role === "host" && eventType === "SNAPSHOT" && Object.keys(result.metadata).length === 0) {
       if (this.initializationRevision === result.majorRevision) return;
       this.initializationRevision = result.majorRevision;
       const initial = createInitialRoomSnapshot(this.options.userId, this.options.displayName, result.majorRevision);
       try {
         await this.hostRtm!.initializeRoom(serializeInitialRoom(initial), result.majorRevision);
-        this.applyRoomSnapshot(initial, true);
+        if (!this.stopped && !this.hasAuthoritativeSnapshot) this.applyRoomSnapshot(initial, true);
       } catch (error) {
         this.fail(error instanceof Error ? error.message : "房间初始化失败");
       }
@@ -603,7 +651,7 @@ export class SingleRoomClient {
     }
     const next = parseRoomSnapshot(result);
     if (!next) return;
-    if (this.options.role === "host" && next.hostUserId !== this.options.userId) {
+    if (next.hostUserId !== this.options.hostUserId) {
       this.fail("房主身份与房间状态不一致");
       return;
     }
@@ -671,6 +719,7 @@ export class SingleRoomClient {
   }
 
   private describeRoomMetadata(result: ChannelMetadataResult): string | undefined {
+    if (Object.keys(result.metadata).length === 0 && (this.hasAuthoritativeSnapshot || this.roomDissolved)) return "房间数据已清理";
     const latest = parseRoomSnapshot(result);
     if (!latest || !this.hasAuthoritativeSnapshot) return "initialize";
 
@@ -897,7 +946,7 @@ export class SingleRoomClient {
   }
 
   private async onRoomDissolved(): Promise<void> {
-    this.options.onRoomDissolved?.();
+    await this.options.onRoomDissolved?.();
     await this.leaveRoom("房间已解散");
   }
 
@@ -1109,6 +1158,7 @@ export class SingleRoomClient {
   }
 
   private requireHost(): void {
+    if (this.stopped || this.roomDissolved) throw new Error("房间已结束");
     if (this.options.role !== "host") throw new Error("只有房主可以执行此操作");
   }
 

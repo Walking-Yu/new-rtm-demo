@@ -118,10 +118,11 @@ describe('两类条目与图例', () => {
     expect(row.querySelector('.lab-trace__summary')?.textContent).toBe('Emma_301 muted=false');
   });
 
-  it('面板顶部给出两类的图例，且色点样式与条目里的同一个类名', () => {
+  it('类型筛选复用条目色点，不再重复显示图例', () => {
     setup();
 
-    const legend = screen.getByTestId('timeline-legend');
+    expect(screen.queryByTestId('timeline-legend')).not.toBeInTheDocument();
+    const legend = screen.getByTestId('filter-kind');
     expect(legend.textContent).toContain('调用 RTM API');
     expect(legend.textContent).toContain('收到 RTM 事件');
     // 图例复用 `.lab-trace__dot`，图例与条目的视觉标记不可能对不上。
@@ -129,11 +130,11 @@ describe('两类条目与图例', () => {
     expect([...dots].map((dot) => dot.getAttribute('data-kind'))).toEqual(['api', 'event']);
   });
 
-  it('图例在没有任何条目时也在 —— 读者进来先看懂两类标记是什么', () => {
+  it('没有条目时也显示两类筛选及颜色', () => {
     setup();
 
     expect(rows()).toHaveLength(0);
-    expect(screen.getByTestId('timeline-legend')).toBeInTheDocument();
+    expect(within(screen.getByTestId('filter-kind')).getAllByRole('button')).toHaveLength(2);
   });
 
   it('只呈现 RTM 两类，条目类型没有第三种取值', () => {
@@ -273,7 +274,7 @@ describe('取消筛选后条目恢复', () => {
     return context;
   }
 
-  it('「取消筛选」按钮把全部条目放回来，且被筛掉的条目一直在 store 里', async () => {
+  it('再次点击选中类型恢复全部条目，且被筛掉的条目一直在 store 里', async () => {
     const user = userEvent.setup();
     const { host, audience } = seed();
     const before = rowTexts();
@@ -285,7 +286,7 @@ describe('取消筛选后条目恢复', () => {
     expect(host.store.getEntries()).toHaveLength(2);
     expect(audience.store.getEntries()).toHaveLength(1);
 
-    await user.click(screen.getByTestId('filter-reset'));
+    await user.click(screen.getByRole('button', { name: '收到 RTM 事件' }));
 
     expect(rowTexts()).toEqual(before);
   });
@@ -317,7 +318,7 @@ describe('取消筛选后条目恢复', () => {
     expect(rows()).toHaveLength(1);
     expect(audience.store.getEntries()).toHaveLength(2);
 
-    await user.click(screen.getByTestId('filter-reset'));
+    await user.click(screen.getByRole('button', { name: '收到 RTM 事件' }));
 
     expect(rows()).toHaveLength(4);
     expect(rowTexts().join('')).toContain('storage.get');

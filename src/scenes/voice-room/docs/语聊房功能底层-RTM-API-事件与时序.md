@@ -6,7 +6,7 @@
 
 第一次阅读建议先从[《语聊房中的 RTM 使用》](../README.md)开始。该 README 说明单页应用的整体目标、模块职责和推荐源码顺序；本文继续展开逐功能的 RTM API、事件与时序。
 
-> 本文按当前 Demo 实现描述完整链路。Demo 没有 App Server，因此使用 Local Storage 代替房间目录、准入和封禁服务，并把 nickname 临时写入 Presence State。生产环境应由 App UID 作为业务用户唯一主键，在同一用户记录中关联 nickname、avatar 和唯一 RTM UID；收到 RTM 事件后通过 publisher RTM UID 反查 App UID 与用户资料。Presence 只承载在线临时状态。详见场景 README 的“Demo 中由浏览器代替 App Server 的部分”。
+> 本文按当前 Demo 实现描述完整链路。Demo 没有 App Server，新房间使用 RTM 共享名称目录完成协作式准入与封禁，Local Storage 仅用于旧邀请兼容，并把 nickname 临时写入 Presence State。生产环境应由 App UID 作为业务用户唯一主键，在同一用户记录中关联 nickname、avatar 和唯一 RTM UID；收到 RTM 事件后通过 publisher RTM UID 反查 App UID 与用户资料。Presence 只承载在线临时状态。详见场景 README 的“Demo 中由浏览器代替 App Server 的部分”。
 
 ## 1. 模块职责
 
@@ -122,6 +122,7 @@ sequenceDiagram
   AppRtm->>SDK: subscribe(...)
   SDK-->>Role: Promise resolve
   Role-->>Store: subscribeRoom resolve
+  Note over Page,Store: 名称房间另等权威四 key 与共享 active 确认
   Store->>Role: initializeMemberState(displayName)
   Role->>SDK: presence.setState(...)
 ```
@@ -235,7 +236,7 @@ sequenceDiagram
   participant RTC as Audience RTC
   participant ARtm as Audience rtm.ts
   alt 踢出或封禁
-    HStore->>HStore: 封禁时先更新 Local Storage
+    HStore->>HStore: 封禁时先确认共享目录写入，再更新本地缓存
     HStore->>HRtm: kickMember() / banMember()
     HRtm->>SDK: publish(USER, control message)
   else 解散
@@ -261,3 +262,7 @@ sequenceDiagram
 - Audience 不写 Channel Storage；Host 不使用 Lock，也不主动调用 `getChannelMetadata()`。
 - Storage 事件是完整权威状态；Presence `SNAPSHOT` 全量替换，其他事件增量消费。
 - 所有消息先通过信封校验和去重，再生成事件 trace 和进入业务消费。
+
+## 名称入口的补充时序
+
+上述房内机制保持复用；新房间在实际订阅前增加共享名称查询，创建时增加条件占名和 active 提交。完整状态机、旧邀请边界与断线确认见[按名称加入与共享目录](./按名称加入与共享目录.md)。

@@ -18,7 +18,8 @@ describe('单端语聊房入口', () => {
 
     expect(await screen.findByTestId('voice-room-entry')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建并进入' })).toBeDisabled();
-    expect(screen.getByLabelText('邀请链接')).toBeInTheDocument();
+    expect(screen.getByLabelText('加入的房间名称')).toBeInTheDocument();
+    expect(screen.queryByLabelText('邀请链接')).not.toBeInTheDocument();
   });
 
   it('Audience 邀请 URL 在平台登录阶段展示 loading，不停在加入表单', async () => {

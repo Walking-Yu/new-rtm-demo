@@ -80,6 +80,8 @@ export interface AppRtmClient {
       data: Array<{ key: string; value: string; revision?: number }>,
       options?: { majorRevision?: number },
     ): Promise<unknown>;
+    /** Removes all metadata from one actual room; never used for the name directory. */
+    removeChannelMetadata(channelName: string, channelType: "MESSAGE"): Promise<unknown>;
   };
 }
 
@@ -122,6 +124,8 @@ export interface AppRoomRtmPort {
     data: Array<{ key: string; value: string; revision?: number }>,
     majorRevision?: number,
   ): Promise<unknown>;
+  /** Clears the actual room metadata after the room has ended. */
+  removeRoomMetadata(roomId: string): Promise<unknown>;
 }
 
 export interface AppRtmSessionOptions {
@@ -147,6 +151,7 @@ const defaultClientFactory: AppRtmClientFactory = (
 /** Creates the in-memory application client used by browser E2E tests. */
 function createE2eAppRtmClient(userId: string): AppRtmClient {
   const listeners = new Map<string, Set<(event: never) => void>>();
+  const records = new Map<string, { majorRevision: number; metadata: Record<string, { value: string; revision: number }> }>();
   /** Queues one synthetic SDK event for all listeners registered under its name. */
   const emit = (name: string, event: unknown) => {
     queueMicrotask(() => {
@@ -190,7 +195,8 @@ function createE2eAppRtmClient(userId: string): AppRtmClient {
       });
       emit("storage", {
         timestamp: Date.now(), channelName, channelType: "MESSAGE", storageType: "CHANNEL",
-        eventType: "SNAPSHOT", publisher: "", data: { majorRevision: 0, totalCount: 0, metadata: {} },
+        eventType: "SNAPSHOT", publisher: "", data: { totalCount: Object.keys(records.get(channelName)?.metadata ?? {}).length,
+          ...(records.get(channelName) ?? { majorRevision: 0, metadata: {} }) },
       });
     },
     /** Completes the synthetic room unsubscribe. */
@@ -204,15 +210,30 @@ function createE2eAppRtmClient(userId: string): AppRtmClient {
       async removeState() {},
     },
     storage: {
+      /** Emits the empty metadata state after room cleanup in E2E mode. */
+      async removeChannelMetadata(channelName) {
+        const current = records.get(channelName);
+        const next = { majorRevision: (current?.majorRevision ?? 0) + 1, metadata: {} };
+        records.set(channelName, next);
+        emit("storage", { timestamp: Date.now(), channelName, channelType: "MESSAGE", storageType: "CHANNEL",
+          eventType: "REMOVE", publisher: userId, data: { ...next, totalCount: 0 } });
+        return { totalCount: 0 };
+      },
       /** Emits a synthetic Channel Metadata update after a write. */
-      async setChannelMetadata(channelName, _channelType, data) {
+      async setChannelMetadata(channelName, _channelType, data, options) {
+        const current = records.get(channelName);
+        const revision = current?.majorRevision ?? 0;
+        if (options?.majorRevision !== undefined && options.majorRevision !== -1 && options.majorRevision !== revision) {
+          throw Object.assign(new Error('版本冲突'), { errorCode: -12014 });
+        }
+        const next = { majorRevision: revision + 1, metadata: { ...current?.metadata,
+          ...Object.fromEntries(data.map(({ key, value }) => [key, { value, revision: revision + 1 }])) } };
+        records.set(channelName, next);
         emit("storage", {
           timestamp: Date.now(), channelName, channelType: "MESSAGE", storageType: "CHANNEL",
           eventType: "UPDATE", publisher: userId,
           data: {
-            majorRevision: 1,
-            totalCount: data.length,
-            metadata: Object.fromEntries(data.map(({ key, value, revision = 1 }) => [key, { value, revision }])),
+            ...next, totalCount: Object.keys(next.metadata).length,
           },
         });
       },
@@ -229,6 +250,10 @@ export class AppRtmSession {
   private listeners: RegisteredListeners | undefined;
   private loginPromise: Promise<AppRoomRtmPort> | undefined;
   private activeListeners: AppRtmEventListeners | undefined;
+  private readonly directoryObservers = new Map<string, {
+    storage: (event: RTMEvents.StorageEvent) => void;
+    connection: (connected: boolean) => void;
+  }>();
   private latestLinkStateEvent: RTMEvents.LinkStateEvent | undefined;
   private handlerGeneration = 0;
   private readonly traces: TraceEntry[] = [];
@@ -250,6 +275,8 @@ export class AppRtmSession {
     /** Delegates a Presence key removal to the owned SDK client. */
     removePresenceState: (roomId, keys) =>
       this.requireClient().presence.removeState(roomId, "MESSAGE", { states: [...keys] }),
+    /** Delegates cleanup without opening another RTM client or subscription. */
+    removeRoomMetadata: roomId => this.requireClient().storage.removeChannelMetadata(roomId, "MESSAGE"),
     /** Delegates a Channel Metadata write to the owned SDK client. */
     setRoomMetadata: (roomId, data, majorRevision) =>
       this.requireClient().storage.setChannelMetadata(
@@ -319,6 +346,26 @@ export class AppRtmSession {
     return this.roomPort;
   }
 
+  /** Metadata-only directory seam. The same owned SDK client also serves the actual room. */
+  getDirectoryPort() {
+    return {
+      subscribe: (nameKey: string) => this.requireClient().subscribe(nameKey, {
+        withMetadata: true, withMessage: false, withPresence: false, withLock: false,
+      }),
+      unsubscribe: (nameKey: string) => this.requireClient().unsubscribe(nameKey),
+      write: (nameKey: string, value: string, revision: number) => this.requireClient().storage.setChannelMetadata(
+        nameKey, 'MESSAGE', [{ key: 'entry', value }], { majorRevision: revision },
+      ),
+    };
+  }
+
+  /** Adds a channel-scoped observer without replacing the active room role binding. */
+  observeDirectory(nameKey: string, storage: (event: RTMEvents.StorageEvent) => void, connection: (connected: boolean) => void): () => void {
+    const observer = { storage, connection };
+    this.directoryObservers.set(nameKey, observer);
+    return () => { if (this.directoryObservers.get(nameKey) === observer) this.directoryObservers.delete(nameKey); };
+  }
+
   /** Maps the latest SDK link-state event to the application connection state. */
   getCurrentLinkState(): AppRtmLinkState {
     const event = this.latestLinkStateEvent;
@@ -366,6 +413,7 @@ export class AppRtmSession {
     this.client = undefined;
     this.loginPromise = undefined;
     this.activeListeners = undefined;
+    this.directoryObservers.clear();
     this.latestLinkStateEvent = undefined;
     this.handlerGeneration += 1;
     if (!client) return;
@@ -430,13 +478,17 @@ export class AppRtmSession {
         this.latestLinkStateEvent = event;
         this.recordLinkStateTrace(event);
         this.activeListeners?.linkState?.(event);
+        for (const observer of this.directoryObservers.values()) observer.connection(event.currentState === "CONNECTED");
       },
       /** Forwards messages to the active role binding. */
       message: (event) => this.activeListeners?.message?.(event),
       /** Forwards Presence events to the active role binding. */
       presence: (event) => this.activeListeners?.presence?.(event),
       /** Forwards Storage events to the active role binding. */
-      storage: (event) => this.activeListeners?.storage?.(event),
+      storage: (event) => {
+        if (event.storageType === 'CHANNEL') this.directoryObservers.get(event.channelName)?.storage(event);
+        this.activeListeners?.storage?.(event);
+      },
       /** Forwards token events to the active role binding. */
       token: (event) => this.activeListeners?.token?.(event),
     };

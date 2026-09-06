@@ -24,7 +24,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ChevronsRight, Eraser, RadioTower, Unplug } from 'lucide-react';
 
-import { collectValues, filterTraces, type TraceFilter } from './filterTraces';
+import { filterTraces, type TraceFilter } from './filterTraces';
 import { formatTraceTime } from './formatTraceTime';
 import { roleColor } from './roleColors';
 import type { TraceEntry } from './traceStore';
@@ -88,10 +88,12 @@ function FilterRow({
             type="button"
             className="lab-timeline__filter"
             data-active={selected}
+            data-kind={option}
             aria-pressed={selected}
             // 再点一次取消 —— 于是「取消筛选后条目全部回来」不需要额外入口。
             onClick={() => onToggle(option)}
           >
+            <span className="lab-trace__dot" data-kind={option} aria-hidden="true" />
             {KIND_LABELS[option] ?? option}
           </button>
         );
@@ -164,14 +166,12 @@ export function TimelinePanel({
   const [showLinkState, setShowLinkState] = useState(true);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  // 类型选项从全量条目算，不从筛选结果算，保证取消某个类型后能立即恢复。
-  const kinds = useMemo(() => collectValues(entries, 'kind'), [entries]);
+  // 固定两类，首次进入时筛选器即说明颜色；不随过滤结果变化。
+  const kinds = ['api', 'event'] as const;
   const visible = useMemo(
     () => filterTraces(entries, filter).filter((entry) => showLinkState || entry.name !== 'linkState'),
     [entries, filter, showLinkState],
   );
-
-  const filtering = (filter.kinds?.length ?? 0) > 0;
 
   // 新的 RTM 调用或事件进入时，始终把时间线定位到最新一项。
   useLayoutEffect(() => {
@@ -256,16 +256,6 @@ export function TimelinePanel({
             折叠
           </button>
         </div>
-
-        {/* 图例：一眼分辨哪些是主动调用、哪些是被动接收。 */}
-        <div className="lab-timeline__legend" data-testid="timeline-legend">
-          {(['api', 'event'] as const).map((kind) => (
-            <span key={kind} className="lab-timeline__legend-item">
-              <span className="lab-trace__dot" data-kind={kind} aria-hidden="true" />
-              {KIND_LABELS[kind]}
-            </span>
-          ))}
-        </div>
       </div>
 
       {/* 单端房间只需按 API/事件类型筛选。 */}
@@ -277,16 +267,6 @@ export function TimelinePanel({
           onToggle={toggleKind}
           testId="filter-kind"
         />
-        {filtering && (
-          <button
-            type="button"
-            className="lab-timeline__action"
-            onClick={() => setFilter(NO_FILTER)}
-            data-testid="filter-reset"
-          >
-            取消筛选
-          </button>
-        )}
       </div>
 
       <div className="lab-timeline__body" ref={bodyRef} data-testid="timeline-body">
@@ -294,13 +274,13 @@ export function TimelinePanel({
           <p className="lab-timeline__empty">
             {entries.length === 0
               ? 'RTM 调用与事件将在这里按时间交错呈现。'
-              : '当前筛选下没有条目。取消筛选即可恢复。'}
+              : '当前筛选下暂无记录。'}
           </p>
         ) : (
           <ol className="lab-timeline__list">
             {visible.map((entry) => (
               // key 用 role + uid + seq：页面级 login 与角色 trace 可共享同一 uid/seq。
-              <TraceRow key={`${entry.role}:${entry.uid}:${entry.seq}`} entry={entry} />
+              <TraceRow key={`${entry.sourceId ?? entry.role}:${entry.uid}:${entry.seq}`} entry={entry} />
             ))}
           </ol>
         )}

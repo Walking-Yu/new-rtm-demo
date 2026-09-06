@@ -1,14 +1,28 @@
+import { isNameKey } from './room-name';
 import {
   isDirectoryStorageKey,
   type BrowserRoomDirectoryEntry,
 } from "./browser-room-directory";
 import { isAudienceDisplayName } from "./audience-display-name";
 
-export interface VoiceRoomUrlPayload {
+export interface LegacyVoiceRoomUrlPayload {
   localStorage: Record<string, BrowserRoomDirectoryEntry>;
   role: "host" | "audience";
   pageUid: string | null;
   nickname: string | null;
+}
+
+export interface NamedVoiceRoomUrlPayload {
+  version: 2;
+  nameKey: string;
+  roomId: string;
+  role: 'host' | 'audience';
+  pageUid: string | null;
+  nickname: string | null;
+}
+export type VoiceRoomUrlPayload = LegacyVoiceRoomUrlPayload | NamedVoiceRoomUrlPayload;
+export function isNamedVoiceRoomPayload(payload: VoiceRoomUrlPayload): payload is NamedVoiceRoomUrlPayload {
+  return 'version' in payload && payload.version === 2;
 }
 
 const PAYLOAD_KEYS = ["localStorage", "nickname", "pageUid", "role"];
@@ -94,6 +108,15 @@ export function decodeVoiceRoomUrlPayload(encoded: string): VoiceRoomUrlPayload 
 }
 
 export function parseVoiceRoomUrlPayloadValue(value: unknown): VoiceRoomUrlPayload | undefined {
+  if (isRecord(value) && value.version === 2) {
+    if (!hasExactKeys(value, ['version', 'nameKey', 'roomId', 'role', 'pageUid', 'nickname']) ||
+        !isNameKey(value.nameKey) || !isNonEmptyString(value.roomId) ||
+        (value.role !== 'host' && value.role !== 'audience') ||
+        (value.pageUid !== null && !isNonEmptyString(value.pageUid)) ||
+        (value.role === 'host' && value.pageUid === null) ||
+        (value.nickname !== null && !isAudienceDisplayName(value.nickname))) return undefined;
+    return value as unknown as NamedVoiceRoomUrlPayload;
+  }
   if (!isRecord(value) ||
     (!hasExactKeys(value, PAYLOAD_KEYS) && !hasExactKeys(value, LEGACY_PAYLOAD_KEYS))) return undefined;
   if (value.role !== "host" && value.role !== "audience") return undefined;
@@ -144,6 +167,7 @@ export function payloadDirectoryEntry(payload: VoiceRoomUrlPayload): {
   storageKey: string;
   entry: BrowserRoomDirectoryEntry;
 } {
+  if (isNamedVoiceRoomPayload(payload)) throw new Error("名称邀请不携带本地目录");
   const [storageKey, entry] = Object.entries(payload.localStorage)[0];
   return { storageKey, entry };
 }

@@ -5,10 +5,8 @@ import {
   ChevronDown,
   CircleX,
   ChevronLeft,
-  Copy,
   Crown,
   DoorOpen,
-  Link2,
   LockKeyhole,
   Mic,
   MicOff,
@@ -25,17 +23,18 @@ import {
 import type { ResolvedEnv } from "../../app/env";
 import type { RtcHelper } from "../../shared/rtc";
 import type { TraceSource } from "../../shared/timeline/useMergedTraces";
+import type { ExperienceProgress } from "../../shared/experience/types";
+import { useVoiceRoomExperienceProgress } from "./experienceProgress";
 import {
   createBrowserRoomDirectory,
-  directoryStorageKey,
   type StorageLike,
 } from "./browser-room-directory";
 import { SEAT_COUNT } from "./config";
 import { AppRtmSession } from "./app-rtm";
 import { SingleRoomClient } from "./event-driven-single-room-client";
+import { normalizeRoomName } from "./room-name";
 import { RoomEntryController } from "./room-entry-controller";
 import {
-  createVoiceRoomInviteCode,
   createVoiceRoomUrl,
   parseVoiceRoomUrl as parseVoiceRoomDataUrl,
   type VoiceRoomUrlPayload,
@@ -50,6 +49,7 @@ export interface VoiceRoomSceneProps {
     storage?: StorageLike;
   };
   onTraceSources?: (sources: readonly TraceSource[]) => void;
+  onExperienceProgress?: (progress: ExperienceProgress | undefined) => void;
 }
 
 export const parseVoiceRoomUrl = parseVoiceRoomDataUrl;
@@ -78,6 +78,17 @@ function VoiceRoomToast({
       </p>
     </div>
   );
+}
+
+function RoomCleanupNotice({ client, onDone }: { client: SingleRoomClient; onDone: () => void }) {
+  const [pending, setPending] = useState(false);
+  return <div className="vr-entry__pending" role="alert">
+    <span>“{client.getView().roomName}”已解散，数据清理未完成。</span>
+    <button type="button" className="vr-entry__secondary" disabled={pending} onClick={() => {
+      setPending(true);
+      void client.retryRoomCleanup().then(onDone).catch(() => {}).finally(() => setPending(false));
+    }}>{pending ? '正在清理…' : '重试清理'}</button>
+  </div>;
 }
 
 function SearchableAudienceSelect({
@@ -194,43 +205,6 @@ function browserStorage(): StorageLike {
   };
 }
 
-type InviteCopyResult = "url" | "data" | false;
-
-function copyTextWithLegacyCommand(text: string): boolean {
-  if (!text) return false;
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.readOnly = true;
-  textarea.setAttribute("aria-hidden", "true");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  textarea.style.top = "0";
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  try {
-    const legacyDocument = document as Document & { execCommand?: (command: string) => boolean };
-    return legacyDocument.execCommand?.("copy") ?? false;
-  } catch {
-    return false;
-  } finally {
-    textarea.remove();
-  }
-}
-
-async function copyInvite(fullUrl: string, data: string): Promise<InviteCopyResult> {
-  if (!fullUrl || !data) return false;
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(fullUrl);
-      return "url";
-    }
-  } catch {
-    // Clipboard API 不可用或权限拒绝时降级为短邀请内容。
-  }
-  return copyTextWithLegacyCommand(data) ? "data" : false;
-}
-
 function createE2eRtc(): RtcHelper {
   const noop = async () => undefined;
   return {
@@ -248,9 +222,16 @@ function createE2eRtc(): RtcHelper {
   };
 }
 
-function traceSource(client: SingleRoomClient): TraceSource {
+function traceSource(client: Pick<SingleRoomClient, 'getTraces' | 'subscribeTraces' | 'clearTraces'>): TraceSource {
+  const sourceId = randomId('trace');
+  let previous: ReturnType<SingleRoomClient['getTraces']> | undefined;
+  let annotated: ReturnType<SingleRoomClient['getTraces']> = [];
   return {
-    getEntries: () => client.getTraces(),
+    getEntries: () => {
+      const current = client.getTraces();
+      if (current !== previous) { previous = current; annotated = current.map(entry => ({ ...entry, sourceId })); }
+      return annotated;
+    },
     subscribe: (listener) => client.subscribeTraces(listener),
     clear: () => client.clearTraces(),
   };
@@ -279,21 +260,21 @@ function VoiceRoomEnded({ message }: { message: string }) {
     <section className="vr-entry vr-entry--status" data-testid="voice-room-ended">
       <span className="vr-entry__status-icon"><CircleX size={24} aria-hidden="true" /></span>
       <h2>{message}</h2>
-      <p>该房间已经结束，请通过新的邀请内容加入其他房间。</p>
+      <p>本次体验已结束，可以返回入口，通过房间名称加入其他房间。</p>
     </section>
   );
 }
 
 function RoomSurface({
   client,
-  getInvite,
   onLeave,
   onDissolve,
+  managing = false,
 }: {
   client: SingleRoomClient;
-  getInvite: () => { fullUrl: string; data: string };
   onLeave: () => void;
-  onDissolve: () => void;
+  onDissolve: () => Promise<void>;
+  managing?: boolean;
 }) {
   const view = useSyncExternalStore(
     (listener) => client.subscribe(listener),
@@ -306,7 +287,8 @@ function RoomSurface({
   const [inviteUserId, setInviteUserId] = useState("");
   const [transientError, setTransientError] = useState<string>();
   const [transientNotice, setTransientNotice] = useState<string>();
-  const [roomToast, setRoomToast] = useState<string>();
+  const [actionPending, setActionPending] = useState(false);
+  const [dissolving, setDissolving] = useState(false);
   const chatFeedRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
@@ -317,7 +299,6 @@ function RoomSurface({
       (seat) => seat.userId === view.userId,
     ),
   );
-  const invite = getInvite();
   const roomTitle = view.roomName;
   const roomAnnouncement = snapshot?.announcement.trim() || "暂无公告";
   // 入房到收到权威 Storage 快照之间也保留完整麦位布局；这只是展示占位，不进 store。
@@ -351,12 +332,6 @@ function RoomSurface({
     const timer = window.setTimeout(() => setTransientNotice(undefined), 3_000);
     return () => window.clearTimeout(timer);
   }, [view.noticeVersion]);
-
-  useEffect(() => {
-    if (!roomToast) return;
-    const timer = window.setTimeout(() => setRoomToast(undefined), 3_000);
-    return () => window.clearTimeout(timer);
-  }, [roomToast]);
 
   useEffect(() => {
     if (!showEmojiPicker) return;
@@ -397,7 +372,8 @@ function RoomSurface({
     if (feed && view.invitation) feed.scrollTop = 0;
   }, [view.invitation?.id]);
 
-  if (view.endedReason) return <VoiceRoomEnded message={view.endedReason} />;
+  if (view.endedReason && dissolving) return <section className="vr-entry vr-entry--status" role="status"><Radio size={24} aria-hidden="true" /><h2>正在返回房间入口…</h2></section>;
+  if (view.endedReason) return <><VoiceRoomEnded message={view.endedReason} /><button type="button" className="vr-entry__secondary" onClick={onLeave}>返回房间入口</button></>;
   return (
     <section
       className="vr-single"
@@ -435,31 +411,12 @@ function RoomSurface({
           </div>
         </div>
         <div className="vr-single__header-actions">
-          {isHost && (
-            <button
-              type="button"
-              className="vr-single__invite"
-              aria-label="复制观众邀请链接"
-              title="复制观众邀请链接"
-              onClick={() => {
-                void copyInvite(invite.fullUrl, invite.data).then((copied) => {
-                  setRoomToast(copied === "url"
-                    ? "已复制完整邀请链接"
-                    : copied === "data"
-                      ? "已复制短邀请内容"
-                      : "复制失败，请检查浏览器剪贴板权限");
-                });
-              }}
-            >
-              <Copy size={14} aria-hidden="true" />
-              <span>邀请好友</span>
-            </button>
-          )}
           <button
             type="button"
             className="vr-single__leave"
             title={isHost ? "暂时离开" : "退出房间"}
             aria-label={isHost ? "暂时离开" : "退出房间"}
+            disabled={managing || actionPending}
             onClick={onLeave}
           >
             <DoorOpen size={16} aria-hidden="true" />
@@ -471,7 +428,8 @@ function RoomSurface({
               className="vr-single__leave vr-single__leave--danger"
               title="解散房间"
               aria-label="解散房间"
-              onClick={onDissolve}
+              disabled={managing || actionPending}
+              onClick={() => { setActionPending(true); setDissolving(true); void onDissolve().finally(() => { setActionPending(false); setDissolving(false); }); }}
             >
               <CircleX size={16} aria-hidden="true" />
               <span>解散</span>
@@ -487,7 +445,7 @@ function RoomSurface({
         </span>
       </div>
       <VoiceRoomToast
-        message={transientError ?? transientNotice ?? roomToast}
+        message={transientError ?? transientNotice}
         tone={transientError ? "error" : "default"}
       />
       <section className="vr-single__seats" aria-label="麦位">
@@ -745,7 +703,7 @@ function RoomSurface({
                   <strong>{memberName(userId)}</strong>
                   <span className="vr-single__member-row-actions">
                     <button type="button" aria-label={`踢出${memberName(userId)}`} onClick={() => void client.kickMember(userId)}>踢出</button>
-                    <button type="button" aria-label={`封禁${memberName(userId)}`} className="vr-single__danger" onClick={() => void client.banMember(userId)}>封禁</button>
+                    <button type="button" aria-label={`封禁${memberName(userId)}`} className="vr-single__danger" disabled={managing || actionPending} onClick={() => { setActionPending(true); void client.banMember(userId).catch(error => setTransientError(error instanceof Error ? error.message : "封禁同步失败，请重试")).finally(() => setActionPending(false)); }}>封禁</button>
                   </span>
                 </article>
               ))}
@@ -1306,6 +1264,7 @@ export function VoiceRoomScene({
   search = window.location.search,
   overrides,
   onTraceSources,
+  onExperienceProgress,
 }: VoiceRoomSceneProps) {
   const directPayload = useMemo(() => parseVoiceRoomDataUrl(search), [search]);
   const pageUid = directPayload?.pageUid ?? randomId("user");
@@ -1321,6 +1280,11 @@ export function VoiceRoomScene({
     session: appRtm,
     directory,
     createRtc: overrides?.createRtc ?? (import.meta.env.MODE === "e2e" ? createE2eRtc : undefined),
+    onDirectoryTransport: (transport) => {
+      const source = traceSource(transport);
+      accumulatedTraceSourcesRef.current.push(source);
+      onTraceSourcesRef.current?.([...accumulatedTraceSourcesRef.current]);
+    },
     replaceUrl: (payload) => {
       const url = createVoiceRoomUrl(window.location.origin, payload);
       window.history.replaceState(null, "", new URL(url).pathname + new URL(url).search);
@@ -1334,7 +1298,8 @@ export function VoiceRoomScene({
   const [bootError, setBootError] = useState<string>();
   const [loginAttempt, setLoginAttempt] = useState(0);
   const [roomName, setRoomName] = useState("");
-  const [inviteInput, setInviteInput] = useState("");
+  const [joinName, setJoinName] = useState("");
+  const [cleanupFailures, setCleanupFailures] = useState<SingleRoomClient[]>([]);
   const [toast, setToast] = useState<string>();
   const directStarted = useRef(false);
   const logoutTimer = useRef<number | undefined>(undefined);
@@ -1356,7 +1321,7 @@ export function VoiceRoomScene({
   useEffect(() => {
     if (logoutTimer.current !== undefined) window.clearTimeout(logoutTimer.current);
     return () => {
-      logoutTimer.current = window.setTimeout(() => { void appRtm.logout(); }, 0);
+      logoutTimer.current = window.setTimeout(() => { void controller.leaveRoom().finally(() => appRtm.logout()); }, 0);
     };
   }, [appRtm]);
 
@@ -1372,6 +1337,9 @@ export function VoiceRoomScene({
   }, [bootState, controller, directPayload]);
 
   const client = entryView.client;
+  const experienceProgress = useVoiceRoomExperienceProgress(appRtm, client, entryView.phase === "room");
+  useEffect(() => { onExperienceProgress?.(experienceProgress); }, [experienceProgress, onExperienceProgress]);
+  useEffect(() => () => onExperienceProgress?.(undefined), [onExperienceProgress]);
   useEffect(() => {
     if (client && !clientTraceSourcesRef.current.has(client)) {
       const source = traceSource(client);
@@ -1406,27 +1374,11 @@ export function VoiceRoomScene({
     };
   }, [client, entryView.phase]);
 
-  const inviteForCurrentRoom = () => {
-    if (!client) return { fullUrl: "", data: "" };
-    const entry = directory.get(client.getView().roomId) ?? entryView.entry;
-    if (!entry) return { fullUrl: "", data: "" };
-    const payload: VoiceRoomUrlPayload = {
-      localStorage: { [directoryStorageKey(new Date(entry.createdAt))]: entry },
-      role: "audience",
-      pageUid: null,
-      nickname: null,
-    };
-    return {
-      fullUrl: createVoiceRoomUrl(window.location.origin, payload),
-      data: createVoiceRoomInviteCode(payload),
-    };
-  };
-
-  if (bootState === "booting" || (directPayload && entryView.phase === "admitting")) {
+  if (bootState === "booting") {
     return (
       <section className="vr-entry vr-entry--status" aria-live="polite" data-testid="voice-room-booting">
         <span className="vr-entry__status-icon"><Radio size={24} aria-hidden="true" /></span>
-        <h2>{directPayload && bootState === "ready" ? "正在校验房主状态…" : "正在初始化 RTM…"}</h2>
+        <h2>正在初始化 RTM…</h2>
         <p>完成登录后即可选择房主或听众流程。</p>
       </section>
     );
@@ -1444,85 +1396,88 @@ export function VoiceRoomScene({
   }
 
   if (entryView.phase === "ended") {
-    return <VoiceRoomEnded message={entryView.error ?? "房间已结束"} />;
+    return <><VoiceRoomEnded message={entryView.error ?? "房间已结束"} /><button type="button" className="vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>返回房间入口</button></>;
   }
 
   if (client && (entryView.phase === "subscribing" || entryView.phase === "room")) {
     return (
       <section className="vr-room-stage">
+        <div inert={entryView.phase === 'subscribing' || entryView.directoryConnected === false}>
         <RoomSurface
           client={client}
-          getInvite={inviteForCurrentRoom}
-          onLeave={() => { void controller.leaveRoom(); }}
-          onDissolve={() => { void client.dissolveRoom(); }}
+          onLeave={() => {
+            if (client.getView().endedReason) window.history.replaceState(null, '', '/social/voice-room');
+            void controller.leaveRoom();
+          }}
+          managing={entryView.managing}
+          onDissolve={async () => {
+            setToast(undefined);
+            try {
+              await client.dissolveRoom();
+            } catch (error) {
+              // A confirmed end can outlive a failed broadcast or unsubscribe.
+              if (client.getView().endedReason !== '房间已解散') {
+                setToast(error instanceof Error ? error.message : '解散尚未确认，请重试');
+                return;
+              }
+            }
+            if (client.getView().roomCleanupError) {
+              setCleanupFailures(current => current.includes(client) ? current : [...current, client]);
+            }
+            // Keep the page session and accumulated traces; discard the ended-room URL.
+            window.history.replaceState(null, '', '/social/voice-room');
+            await controller.leaveRoom();
+          }}
         />
+        </div>
         {entryView.phase === "subscribing" && (
           <div className="vr-room-loading" role="status" aria-live="polite" data-testid="voice-room-loading-overlay">
             <Radio size={24} aria-hidden="true" />
-            <strong>正在加载房间…</strong>
+            <strong>{entryView.statusText ?? '正在加载房间…'}</strong>
+            <button type="button" className="vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>取消</button>
           </div>
         )}
+        {entryView.directoryConnected === false && entryView.phase === 'room' && <div className="vr-room-loading" role="status"><strong>连接中断，正在确认房间状态…</strong><button type="button" onClick={() => { void controller.leaveRoom(); }}>返回入口</button></div>}
+        {entryView.managing && <p className="vr-entry__pending" role="status">正在同步房间状态…</p>}
         <VoiceRoomToast message={toast} tone="error" />
       </section>
     );
   }
 
-  const entries = directory.listForUser(appRtm.userId);
-  const joinFromInput = () => {
-    const payload = parseVoiceRoomDataUrl(inviteInput.trim());
-    if (!payload || payload.role !== "audience") {
-      setToast("请粘贴有效的 Audience 邀请链接");
-      return;
-    }
-    void controller.joinAudienceFromUrlPayload(payload).catch((error) => {
-      setToast(error instanceof Error ? error.message : "加入房间失败");
-    });
+  const pending = entryView.phase === 'admitting';
+  const nameError = (value: string) => {
+    if (!value) return undefined;
+    try { normalizeRoomName(value); return undefined; } catch (error) { return (error as Error).message; }
   };
+  const createError = nameError(roomName), joinError = nameError(joinName);
+  const reportFailure = (error: unknown) => setToast(error instanceof Error ? error.message : '房间操作失败，请重试');
+  const joinByName = () => { setToast(undefined); void controller.joinAudienceByName(joinName).catch(reportFailure); };
 
   return (
     <section className="vr-entry vr-entry--landing" data-testid="voice-room-entry">
-      <div className="vr-entry__hero">
-        <span className="vr-entry__hero-icon"><Volume2 size={22} aria-hidden="true" /></span>
-        <span className="vr-entry__kicker">LIVE VOICE ROOM</span>
-        <h1>在声音里，相遇</h1>
-        <p>创建一间语聊房，或通过邀请链接加入一场正在发生的对话。</p>
-      </div>
       <div className="vr-entry__choices">
         <section className="vr-entry__choice-panel vr-entry__choice--host">
-          <span><Crown size={22} aria-hidden="true" /></span>
           <label>
             房间名称
-            <input aria-label="房间标题" value={roomName} onChange={(event) => setRoomName(event.target.value)} placeholder="例如：周五晚间语聊" />
+            <input aria-label="房间标题" aria-describedby="create-name-hint" aria-invalid={!!createError} disabled={pending} value={roomName} onChange={(event) => setRoomName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && roomName.trim() && !createError && !pending) { setToast(undefined); void controller.createHostRoom({ roomName }).catch(reportFailure); } }} placeholder="例如：周五晚间语聊" />
           </label>
-          <button type="button" className="vr-entry__primary" disabled={!roomName.trim()} onClick={() => {
-            void controller.createHostRoom({ roomName }).catch((error) => setToast(error instanceof Error ? error.message : "创建房间失败"));
+          <p id="create-name-hint" className={`vr-entry__hint ${createError ? 'vr-entry__hint--error' : ''}`}>{createError ?? '名称唯一，最多 32 个字符；英文不区分大小写。'}</p>
+          <button type="button" className="vr-entry__primary" disabled={pending || !roomName.trim() || !!createError} onClick={() => {
+            setToast(undefined); void controller.createHostRoom({ roomName }).catch(reportFailure);
           }}>创建并进入</button>
         </section>
         <section className="vr-entry__choice-panel">
-          <span><Link2 size={22} aria-hidden="true" /></span>
           <label>
-            Audience 邀请链接
-            <input aria-label="邀请链接" value={inviteInput} onChange={(event) => setInviteInput(event.target.value)} placeholder="粘贴 data=... 邀请内容" />
+            加入房间
+            <input aria-label="加入的房间名称" aria-describedby="join-name-hint" aria-invalid={!!joinError} disabled={pending} value={joinName} onChange={event => setJoinName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && joinName.trim() && !joinError && !pending) joinByName(); }} placeholder="输入房主告诉你的房间名称" />
           </label>
-          <button type="button" className="vr-entry__primary" disabled={!inviteInput.trim()} onClick={joinFromInput}>加入房间</button>
+          <p id="join-name-hint" className={`vr-entry__hint ${joinError ? 'vr-entry__hint--error' : ''}`}>{joinError ?? '换一台设备，输入相同名称即可加入。'}</p>
+          <button type="button" className="vr-entry__primary" disabled={pending || !joinName.trim() || !!joinError} onClick={joinByName}>加入房间</button>
         </section>
       </div>
-      <div className="vr-entry__directory">
-        <div><strong>本机最近房间</strong><span>{entries.length} 个</span></div>
-        {entries.length === 0 ? <p>暂无可加入的本地房间。</p> : (
-          <ul>{entries.map((entry) => (
-            <li key={entry.roomId}>
-              <button type="button" onClick={() => {
-                void controller.joinAudienceFromDirectory(entry.roomId).catch((error) => setToast(error instanceof Error ? error.message : "加入房间失败"));
-              }}>
-                <span className="vr-entry__directory-mark"><Users size={15} aria-hidden="true" /></span>
-                <span><strong>{entry.roomName}</strong><small>点击加入房间</small></span>
-                <ChevronLeft size={15} aria-hidden="true" />
-              </button>
-            </li>
-          ))}</ul>
-        )}
-      </div>
+      {pending && <div className="vr-entry__pending" role="status"><span>{entryView.statusText}</span><button type="button" className="vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>取消</button></div>}
+      {cleanupFailures.map(failed => <RoomCleanupNotice key={failed.getView().roomId} client={failed}
+        onDone={() => setCleanupFailures(current => current.filter(value => value !== failed))} />)}
       <VoiceRoomToast message={toast ?? entryView.error} tone="error" placement="page" />
       <p className="vr-entry__footnote">进入房间后，使用耳机可获得更好的语音体验</p>
     </section>

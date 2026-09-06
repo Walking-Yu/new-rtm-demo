@@ -2,7 +2,7 @@
 
 这个目录实现了一个可真实联调的单页语聊房，用来展示 Agora RTM Web SDK 在语聊房场景中的典型用法：房间状态怎样同步，成员临时状态怎样传播，以及排麦、邀请、聊天和治理动作怎样发送给一个人或整个房间。
 
-每个浏览器 Tab 只运行一个角色和一个 RTM client。真实联调时，Host 与 Audience 分别打开两个 Tab，使用不同的 RTM UID 加入同一个房间。
+每个浏览器 Tab 只运行一个角色和一个 RTM client。真实联调时，Host 与 Audience 分别打开两个 Tab，使用不同的 RTM UID，输入相同房间名称加入同一个房间。
 
 ## 建议先读
 
@@ -51,6 +51,7 @@
 - 创建一个 RTM client；
 - 在 `login()` 前注册 `linkState`、`message`、`presence`、`storage` 和 `token` listener；
 - 完成登录，并向当前 Host 或 Audience 提供同一个房间操作端口；
+- 同一 client 按频道分发名称目录事件与实际房间事件，最多同时订阅两个频道；
 - 角色离房时继续保留已登录 client，只取消房间订阅；
 - 页面真正卸载时移除 listener 并调用 `logout()`。
 
@@ -135,7 +136,7 @@ RTM SDK 只负责传递字符串，并不知道“申请上麦”或“踢出成
 
 ### 房间目录、成员准入和封禁
 
-Demo 使用 Local Storage 保存房间目录、房间 `active/inactive` 状态和封禁名单，并把部分房间信息放进邀请 URL。
+新房间使用 RTM Channel Metadata 共享名称、房间状态和封禁名单；每个名称一个目录频道，实际房间仍只保存原有四个 key。名称房间不再保存本机最近记录，V2 邀请只携带 nameKey、本轮 roomId 与页面身份。旧版邀请沿用本地目录快照，不自动迁移。详见[按名称加入与共享目录](./docs/按名称加入与共享目录.md)。
 
 生产环境应由 App Server 提供房间创建与查询、成员准入、封禁、房间生命周期和邀请校验。邀请链接通常只携带房间 ID 或服务端签发的邀请凭证，不应把 Local Storage 当作跨用户的房间权威来源。
 

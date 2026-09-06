@@ -33,6 +33,7 @@ function setup() {
       operations.push(`presence:remove:${roomId}`);
       presenceRemovals.push([...keys]);
     },
+    async removeRoomMetadata() { throw new Error("Audience 不应删除 Storage"); },
     async setRoomMetadata() { throw new Error("Audience 不应写 Storage"); },
   };
   const session: AudienceRoomRtmSession = {

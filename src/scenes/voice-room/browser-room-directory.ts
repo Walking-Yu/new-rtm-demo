@@ -6,6 +6,8 @@ export interface StorageLike {
 }
 
 export interface BrowserRoomDirectoryEntry {
+  nameKey?: string;
+  version?: 2;
   roomId: string;
   roomName: string;
   createdAt: number;
@@ -36,6 +38,7 @@ function mergeEntry(current: BrowserRoomDirectoryEntry | undefined, input: Brows
   const inputUpdatedAt = input.updatedAt ?? timestamp;
   const latest = !current || inputUpdatedAt >= current.updatedAt ? input : current;
   return {
+    ...(input.nameKey || current?.nameKey ? { nameKey: input.nameKey ?? current?.nameKey, version: 2 as const } : {}),
     roomId: input.roomId,
     roomName: latest.roomName,
     // 增量更新未提供 Host UID 时必须保留已有值，不能用 undefined 覆盖。
@@ -63,6 +66,7 @@ function readEntries(storage: StorageLike, key: string): BrowserRoomDirectoryEnt
       (typeof (item as BrowserRoomDirectoryEntry).roomName === 'string' || typeof (item as { title?: unknown }).title === 'string') &&
       typeof (item as BrowserRoomDirectoryEntry).createdAt === 'number',
     ).map((item) => ({
+      ...(typeof item.nameKey === "string" && item.version === 2 ? { nameKey: item.nameKey, version: 2 as const } : {}),
       roomId: item.roomId,
       roomName: (item as BrowserRoomDirectoryEntry).roomName ?? (item as unknown as { title: string }).title,
       createdAt: item.createdAt,

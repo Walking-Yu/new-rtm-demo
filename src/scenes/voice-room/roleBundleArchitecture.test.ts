@@ -117,7 +117,7 @@ describe('role 业务 bundle 架构', () => {
 
   it('Host/Audience rtm.ts 公开函数严格等于映射文档列出的函数', () => {
     expect(publicMethods(sources['./host/rtm.ts'])).toEqual([
-      'subscribeRoom', 'unsubscribeRoom', 'initializeRoom', 'updateAnnouncement',
+      'subscribeRoom', 'unsubscribeRoom', 'initializeRoom', 'clearRoomData', 'updateAnnouncement',
       'updateSeats', 'updateForcedMutedUsers', 'initializeMemberState',
       'muteMicrophone', 'unmuteMicrophone', 'reportMicrophoneError', 'clearMicrophoneError',
       'approveSeatRequest', 'rejectSeatRequest', 'inviteToSeat', 'kickMember',

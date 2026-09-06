@@ -10,7 +10,7 @@ import type {
 } from "./event-driven-single-room-client";
 import type { AppRtmSession } from "./app-rtm";
 import { RoomEntryController } from "./room-entry-controller";
-import type { VoiceRoomUrlPayload } from "./voice-room-url";
+import type { VoiceRoomUrlPayload, LegacyVoiceRoomUrlPayload } from "./voice-room-url";
 
 function createStorage(operations: string[]): StorageLike {
   const values = new Map<string, string>();
@@ -22,7 +22,7 @@ function createStorage(operations: string[]): StorageLike {
   };
 }
 
-function invitePayload(banUserIds: string[] = []): VoiceRoomUrlPayload {
+function invitePayload(banUserIds: string[] = []): LegacyVoiceRoomUrlPayload {
   return {
     localStorage: {
       "record-channel-list-20260818": {
@@ -67,14 +67,18 @@ function setup(options: { userId?: string } = {}) {
     replaceUrl: (payload) => replaced.push(payload),
   });
   controller.subscribe(() => operations.push(`view:${controller.getView().phase}`));
-  return { controller, directory, operations, createClient, clients, replaced };
+  const restoreLegacyHost = (roomName: string) => controller.restoreHostFromUrlPayload({
+    ...invitePayload(), role: 'host', pageUid: session.userId,
+    localStorage: { 'record-channel-list-20260818': { ...Object.values(invitePayload().localStorage)[0], roomId: 'room-created', roomName, hostUserId: session.userId } },
+  });
+  return { controller, directory, operations, createClient, clients, replaced, restoreLegacyHost };
 }
 
 describe("RoomEntryController", () => {
-  it("Host 创建先写 Local Storage，再挂载 room/subscribing，最后调用 subscribe", async () => {
+  it("旧 Host 邀请恢复先合并 Local Storage，再挂载与订阅", async () => {
     const context = setup({ userId: "host-1" });
 
-    await context.controller.createHostRoom({ roomName: "新房间" });
+    await context.restoreLegacyHost("新房间");
 
     expect(context.operations).toEqual([
       "localStorage:set:record-channel-list-20260818",
@@ -89,7 +93,7 @@ describe("RoomEntryController", () => {
 
   it("Host 封禁回调把目标 UID 写入 Local Storage 目录项", async () => {
     const context = setup({ userId: "host-1" });
-    await context.controller.createHostRoom({ roomName: "封禁测试房间" });
+    await context.restoreLegacyHost("封禁测试房间");
     const clientOptions = context.clients[0].options;
 
     clientOptions.onBanUser?.("audience-2");
@@ -99,7 +103,7 @@ describe("RoomEntryController", () => {
 
   it("解散回调把 Local Storage 房间置为 inactive，且 inactive 房间不再准入", async () => {
     const host = setup({ userId: "host-1" });
-    await host.controller.createHostRoom({ roomName: "解散测试房间" });
+    await host.restoreLegacyHost("解散测试房间");
     host.clients[0].options.onRoomDissolved?.();
 
     expect(host.directory.get("room-created")?.status).toBe("inactive");

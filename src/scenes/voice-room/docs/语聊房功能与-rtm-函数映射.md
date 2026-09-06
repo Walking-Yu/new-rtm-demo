@@ -1,6 +1,6 @@
 # 语聊房功能与 RTM 函数映射
 
-更新日期：2026-08-20
+更新日期：2026-09-06
 
 本文是语聊房当前的函数级契约。用户动作必须对应到角色 `rtm.ts` 中的语义函数；SDK 事件由角色 `onRtmEvent.ts` 绑定，并分发给业务 store 中的独立消费函数。
 
@@ -21,7 +21,7 @@
 
 模块：Host/Audience `rtm.ts`。先通过对应 `onRtmEvent.ts` 绑定当前角色 listener，再订阅房间 Message、Presence 和 Metadata；Promise 只等 SDK `subscribe()`。
 
-业务桥接层在客户端构造时先建立非权威初始展示 store。生产入房控制器等待 `subscribeRoom()` 成功后立即切换到 `room` 并撤掉蒙层，再后台启动 `initializeMemberState()` 与 RTC join；二者互不阻塞，也不阻塞页面渲染。首个可解析 Storage 事件仍作为权威 `initialize` 基线。
+业务桥接层在客户端构造时先建立非权威初始展示 store。名称入房控制器等待 `subscribeRoom()` 成功、`waitUntilReady()` 的四 key 权威快照与共享 active 确认后，才切换到 `room` 并撤掉蒙层，再后台启动 `initializeMemberState()` 与 RTC join。旧邀请保留原有订阅完成语义。首个可解析 Storage 事件仍作为权威 `initialize` 基线。
 
 ### [`unsubscribeRoom()`（Host）](../host/rtm.ts#L207) / [`unsubscribeRoom()`（Audience）](../audience/rtm.ts#L189)
 
@@ -113,11 +113,11 @@
 
 ### [`banMember(targetUserId)`](../host/rtm.ts#L298)
 
-模块：Host `rtm.ts`。只发送 P2P `member.ban`。业务桥接的 `banMember()` 同时通知入房控制器，先把 UID 加入当日 Local Storage 目录项的 `banUserIds`，再执行麦位清理与 P2P。
+模块：Host `rtm.ts`。只发送 P2P `member.ban`。业务桥接的 `banMember()` 同时通知入房控制器，先确认 UID 加入共享名称目录的 `banUserIds`（旧房间仍写 Local Storage），再执行麦位清理与 P2P。
 
 ### [`dissolveRoom()`](../host/rtm.ts#L303)
 
-模块：Host `rtm.ts`。向房间发布 `room.dissolved`。业务桥接先把本地目录状态置为 `inactive`，发布成功或失败后都执行 RTC leave 与 RTM unsubscribe；Audience 收到该消息后也把本地目录置为 `inactive` 并退订。
+模块：Host `rtm.ts`。向房间发布 `room.dissolved`。业务桥接先等待共享名称目录状态确认为 `inactive`，并更新本地缓存（旧房间只更新本地目录），发布成功或失败后都执行 RTC leave 与 RTM unsubscribe；Audience 收到该消息后也把本地目录置为 `inactive` 并退订。
 
 ## 公屏互动
 
@@ -132,6 +132,10 @@
 ### [`sendHeartMessage()`（Host）](../host/rtm.ts#L318) / [`sendHeartMessage()`（Audience）](../audience/rtm.ts#L276)
 
 模块：Host/Audience `rtm.ts`。发送房间消息 `emoji.reaction`，value 固定为 `❤️`，不携带 nickname。
+
+### `clearRoomData()`（Host）
+
+模块：Host `rtm.ts`。在解散确认后阻止该实例继续写入房间 Metadata，等待已发起的写入结束，再调用 `storage.removeChannelMetadata(roomId, "MESSAGE")` 清理实际房间的全部四项数据，记录真实 API 成功或失败。名称目录 `entry` 不删除。重复进行中的清理复用同一 Promise；失败可对原 roomId 重试，不能影响同名新房间。Audience 不执行数据删除。
 
 ## 数据流观测
 
@@ -256,3 +260,7 @@ Audience 把 Local Storage 房间状态置为 `inactive`，执行 RTC leave → 
 ### [`onHeartMessage(envelope, context)`](../event-driven-single-room-client.ts#L912)
 
 通过 `getNickNameByUid(context.publisher)` 解析发送方，追加爱心公屏消息。
+
+## 名称目录
+
+名称目录的独立 Host/Audience 适配器、CAS 函数与快照准入详见[共享目录说明](./按名称加入与共享目录.md)。它与本文件的实际房间四 key 协议分属两个频道，共用同一个页面 client。

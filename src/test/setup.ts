@@ -1,3 +1,5 @@
+/// <reference types="node" />
+import { webcrypto } from 'node:crypto';
 /**
  * 根 vitest 的全局 setup。
  *
@@ -8,6 +10,7 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
 import { afterEach } from 'vitest';
+Object.defineProperty(crypto, 'subtle', { configurable: true, value: webcrypto.subtle });
 
 afterEach(() => {
   cleanup();

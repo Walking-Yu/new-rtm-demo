@@ -21,11 +21,11 @@
 
 ## 仓库结构
 
-本仓库只有**一个应用** —— 根目录 `src/` 下的 RTM 场景实验室（8 个一级分类、23 个二级场景，唯一已实现的是语聊房）。单入口 `index.html`，单份 `package.json` / `vite.config.ts` / `playwright.config.ts`，单套 e2e（`e2e/lab.spec.ts`）。
+本仓库只有**一个应用** —— 根目录 `src/` 下的 RTM 场景实验室（顶部 7 个一级场景，唯一已实现的是语聊房；保留原有场景 URL 兼容邀请链接）。单入口 `index.html`，单份 `package.json` / `vite.config.ts` / `playwright.config.ts`，单套 e2e（`e2e/lab.spec.ts`）。
 
 `.github/workflows/ci.yml` 在推送与 PR 上跑单元测试、构建和 e2e。`package-lock.json` 必须包含所有平台的可选原生依赖，只含当前平台的 lockfile 会让 Linux 构建机上的 `npm ci` 装出不能运行的产物。
 
-`src/` 下只有四个顶层目录：`app/`（外壳）、`scenes/`（场景）、`shared/`（时间线与 RTC 脚手架）、`test/`（vitest 全局 setup）。**不要引入与 `src/` 平行的第二套应用代码或第二个入口页** —— 单入口是当前架构的前提，`tests/startDemoScript.test.ts` 断言了「不配置多入口」。
+`src/` 下只有四个顶层目录：`app/`（外壳）、`scenes/`（场景）、`shared/`（体验路径、时间线与 RTC 脚手架）、`test/`（vitest 全局 setup）。**不要引入与 `src/` 平行的第二套应用代码或第二个入口页** —— 单入口是当前架构的前提，`tests/startDemoScript.test.ts` 断言了「不配置多入口」。
 
 ## 常用命令
 
@@ -41,7 +41,7 @@
 npm run dev                  # 开发服务器（端口 8080）
 npm run dev:https            # HTTPS 开发服务器（端口 8080，需先生成 .cert）
 npm run build                # tsc -b && vite build，单入口
-npm test                     # vitest（25 文件 / 297 项）
+npm test                     # vitest 全部单元测试
 npm run test:e2e             # playwright（无头）
 npm run test:e2e:lab         # 只跑 e2e/lab.spec.ts
 ```
@@ -65,15 +65,17 @@ Playwright 使用独立的 `e2e` mode，`vite.config.ts` 在该 mode 下设置 `
 ## 实验室架构（`src/`）
 
 ```
-app/                     外壳：路由、两级 tab、env 解析、身份推导、样式
+app/                     外壳：路由、一级场景导航、env 解析、身份推导、样式
+  experienceScenarios.ts 七个导航入口及场景体验任务的配置
   env.ts                 纯函数解析 appId：window.__ENV__ → import.meta.env → 未配置
   envSnapshot.ts          启动时读一次全局快照（唯一有副作用的那层）
   identity.ts            房间 ID 与两端 uid 推导，uid 带角色前缀
 scenes/
-  registry.ts            8 个一级分类 + 23 个二级场景，**只有四个字段**
+  registry.ts            保留原有分类与场景 ID，用于旧 URL 兼容；不直接生成顶栏
   capabilities.ts        场景能力标签（刻意不进注册表，但不丢弃）
   voice-room/            唯一已实现的场景
 shared/
+  experience/            三层体验路径；接收场景配置和真实事件完成证据
   rtc.ts                 全场景共享的 RTC 辅助
   timeline/              trace store、多实例归并、过滤、时间线面板
 test/setup.ts            根 vitest 的 setup，服务整个 src/
@@ -90,7 +92,9 @@ audience/
   rtm.ts                   听众端纯 RTM 机制
   onRtmEvent.ts            听众端 SDK 事件绑定与协议校验
 app-rtm.ts    与语聊房单页面应用生命周期对齐的唯一 RTM client、登录和事件分发
-browser-room-directory.ts  Local Storage 房间目录
+browser-room-directory.ts  Local Storage 旧邀请兼容数据
+room-name.ts / name-directory.ts  名称规范化、共享记录与准入观察
+host/name-directory-rtm.ts / audience/name-directory-rtm.ts  各角色的目录 RTM 适配器
 voice-room-url.ts  唯一 data 参数的 Base64URL codec
 room-entry-controller.ts   Host/Audience 归一化准入与订阅顺序
 event-driven-single-room-client.ts 当前 Tab 单角色业务桥接与房间 store
@@ -106,15 +110,17 @@ VoiceRoomScene.tsx 场景容器
 
 **RTM Storage 是房间权威状态。** 房间 metadata 只有 `hostUserId`、`announcement`、`seats`、`forcedMutedUserIds` 四个 key。Host 收到空 Storage `SNAPSHOT` 时用该快照的 `majorRevision` 一次初始化；非空全量事件直接替换本地 store。Audience 不写 Storage。最终协议不使用 Lock，不调用 `getChannelMetadata()`。
 
-**房间目录与封禁只存在 Local Storage。** 目录 key 为 `record-channel-list-YYYYMMDD`，URL 只有一个 `data` Base64URL 参数。封禁通过本地目录、邀请快照和 P2P 消息尽力同步，不构成服务端权限。
+**新房间使用共享名称目录。** 每个名称映射到 `vrn-v1-` 前缀的独立 Metadata-only 频道，`entry` 保存名称、本轮随机 roomId、hostUserId、attemptId、creating/active/inactive 与 banUserIds。每页仍只有一个 RTM client，最多同时订阅名称目录和实际房间两个频道。目录使用按频道 observer，不能覆盖角色 listener；Audience 只读目录。Local Storage 的 `record-channel-list-YYYYMMDD` 仅用于旧邀请兼容；名称房间不再写入本机历史记录，不能作为新房间的准入权威。URL 仍只有 `data` 参数，V2 携带 nameKey、roomId、role、pageUid、nickname；V1 保留旧目录快照解析。封禁仍是客户端协作，不构成服务端权限。
 
-**房间生命周期是 active/inactive。** 新房间和旧目录缺省归一为 `active`；Host“暂时离开”只离开 RTC 并 RTM unsubscribe，房间保持 active，可通过 Host URL 恢复。Host“解散房间”先把本地目录置为终态 `inactive`，再广播 `room.dissolved` 并退订；Audience 收到后也置 inactive 并退订。inactive 不得被后续旧邀请重新激活，也不出现在可加入列表。
+**名称登记先占用、再初始化、最后开放。** 空目录用 majorRevision=0 条件创建 creating，已有 inactive 用匹配的正版本替换；实际房间四 key 就绪后，只有仍拥有本轮 attemptId 的 Host 能把目录改成 active。未知写入结果通过新快照确认，不能无版本覆盖。中断的 creating 可由同一请求恢复；其他创建者连续观察同一记录 60 秒后才可条件接管，断线重计时。active 不按房主离线或本地缓存时间过期。
 
-**邀请复制优先完整 URL，失败降级短内容。** Host 点击邀请时，Clipboard API 成功则复制当前 origin 的完整 Audience URL；Clipboard API 不可用或拒绝时，兼容复制只写 `data=...`。Audience 输入始终兼容完整 URL、`?data=...`、`data=...` 和纯 Base64URL payload。
+**房间生命周期由共享记录决定。** Host“暂时离开”只离开 RTC 并退订目录和房间，名称保持 active，可通过 Host URL 恢复。新房间的“解散”必须先确认共享目录 inactive，再广播 room.dissolved、清理本轮实际房间的四项 Metadata 并离开；同步失败不能假装解散成功。封禁必须先等待共享 banUserIds 更新成功，再清理麦位与 P2P 通知。已加入端持续观察目录，解散、封禁或 roomId 变化都会退出。同名重建使用新的随机 roomId，旧邀请、最近记录、迟到操作不得跳转或修改新房间。房主主动解散确认并退出后直接回到创建／加入入口，同时清除旧房间 URL 参数；共享写入未确认时留在房内提示错误。清理前阻止本端新写入并等待在途写入完成；名称目录不删除。广播失败仍须清理，清理失败返回入口并提供重试，重试固定原 roomId。听众不执行删除，仍保留结束原因提示。V1 旧房间保留原来的本地生命周期，不自动迁移。
 
-**消息统一封装、带 TTL、并做去重。** `rtm.ts` 创建的信封包含 `schemaVersion`、`messageId`、`roomId`、可选目标 UID、`sentAt`、`expiresAt` 和 payload。`onRtmEvent.ts` 先校验来源/目标/TTL，再按 `messageId` 去重。最终协议不自动重试。
+**页面不提供邀请好友、邀请复制或粘贴邀请加入入口。** 创建与加入均通过房间名称；URL 编解码与旧版完整房间链接直达仍保留，用于已有链接兼容和房主刷新恢复。
 
-**nickname 只来自 Presence store。** 订阅成功后 `initializeMemberState(displayName)` 首次写 nickname；Host 同时写 `muted=false`，尚未上麦的 Audience 不写 `muted`。Audience RTC 发布成功后才增量写 `muted`，主动或被迫下麦后用 `presence.removeState` 删除 `muted` 与 `microphoneError`。排麦申请、接受邀请和公屏消息均不携带 nickname，接收方按 publisher UID 调用业务 store 的 `getNickNameByUid()`。麦位 UI、trace 和系统消息不得把 Storage `seat.displayName` 当作 nickname；Presence 中无 nickname 或用户已离线时，统一降级展示省略后的 UID。Host 批准排麦只写 `seats` metadata，不发 `seat.approved` P2P。封禁动作在发 `member.ban` P2P 之前必须通知入房控制器更新 Local Storage `banUserIds`。
+**消息统一封装、带 TTL、并做去重。** `rtm.ts` 创建的信封包含 `schemaVersion`、`messageId`、`roomId`、可选目标 UID、`sentAt`、`expiresAt` 和 payload。`onRtmEvent.ts` 先校验来源/目标/TTL，再按 `messageId` 去重。房内消息不自动重试；共享目录遇到未知写入结果时通过快照确认，而不重放消息。
+
+**nickname 只来自 Presence store。** 订阅成功后 `initializeMemberState(displayName)` 首次写 nickname；Host 同时写 `muted=false`，尚未上麦的 Audience 不写 `muted`。Audience RTC 发布成功后才增量写 `muted`，主动或被迫下麦后用 `presence.removeState` 删除 `muted` 与 `microphoneError`。排麦申请、接受邀请和公屏消息均不携带 nickname，接收方按 publisher UID 调用业务 store 的 `getNickNameByUid()`。麦位 UI、trace 和系统消息不得把 Storage `seat.displayName` 当作 nickname；Presence 中无 nickname 或用户已离线时，统一降级展示省略后的 UID。Host 批准排麦只写 `seats` metadata，不发 `seat.approved` P2P。封禁动作在发 `member.ban` P2P 之前必须等待入房控制器完成共享目录写入；旧房间仍更新 Local Storage `banUserIds`。
 
 **可读 trace 的业务解释只做一次。** nickname 映射、麦位解析和 Presence/Storage/Message 的可读摘要由业务桥接层生成；角色 `rtm.ts` 不维护第二份 nickname store，不解析 Storage 来理解麦位。业务 store listener 返回 `summary` 和延迟执行的 `consume`；`onRtmEvent.ts` 先记录事件 trace，再调用 `consume` 并观察异步失败。角色构造参数中的只读 `describeUser` / `describeSeats` 只服务 API trace，不得在 `rtm.ts` 内复制业务状态。
 
@@ -136,13 +142,13 @@ VoiceRoomScene.tsx 场景容器
 
 **上麦 P2P 失败与麦位竞争必须显式收敛。** Audience 申请或 Host 邀请的 USER P2P publish 超时、目标不在线或失败时，在房间视图 toast“<nickname> 不在线”；申请失败同时回滚等待态。Storage 最新快照若显示申请中的麦位被其他 UID 占用，申请方清除等待态并 toast“上麦申请被拒绝”；邀请中的麦位被任意 UID 占用时，其他受邀方清除邀请并隐藏接受/拒绝入口。收到 `seat.invited` 时公屏滚到顶部展示操作，之后有新公屏消息时再滚到底部。
 
-**`subscribeRoom()` 的 Promise 只代表 SDK `subscribe()` 完成。** 它不等 Presence 或 Storage 首快照。订阅失败只回滚当前角色绑定和房间订阅，不操作页面级登录。
+**`subscribeRoom()` 的 Promise 只代表 SDK `subscribe()` 完成。** 它不等 Presence 或 Storage 首快照。订阅失败只回滚当前角色绑定和房间订阅，不操作页面级登录。名称房间必须额外等待 `waitUntilReady()` 与共享 active 确认，才撤销交互蒙层、推进连接体验任务并启动 RTC/Presence；目录订阅不得推进房间任务。
 
 **重连只消费 SDK 后续全量事件。** 不重复 `subscribe()`、不调用 `getChannelMetadata()`、不重放历史消息。Presence `SNAPSHOT` 全量替换在线 store：缺失 nickname 时不保留旧映射，缺失本端 `muted` 时默认 `false`，缺失远端 `muted` / `microphoneError` 时从对应 store 删除并按 `false` 展示；join/leave/timeout/interval 做增量更新，禁止 `presence.getOnlineUsers()`。
 
 **一个标签页只跑一个真实客户端。** Host 与 Audience 的真实联调使用两个标签页；`RoomEntryController` 用 generation 守卫所有准入和订阅 await。两个页面都会真实播放音频，**人工验证时必须戴耳机**。
 
-**Host Presence 缺席只表示暂时离开。** active 房间的 Audience 准入不调用 `whoNow`，通过本地封禁与 status 检查后直接 subscribe。Presence SNAPSHOT/leave/timeout 中 Host 不在线时只把 `hostTemporarilyAway` 置为 true，Host 麦位显示“暂时离开…”，其他成员继续互动；Host 回来后清除。只有目录 inactive 或收到 `room.dissolved` 才进入结束页。
+**Host Presence 缺席只表示暂时离开。** active 房间的 Audience 准入不调用 `whoNow`，名称房间通过共享目录中的封禁与 status 检查后 subscribe；旧邀请保留本地检查。Presence SNAPSHOT/leave/timeout 中 Host 不在线时只把 `hostTemporarilyAway` 置为 true，Host 麦位显示“暂时离开…”，其他成员继续互动；Host 回来后清除。只有目录 inactive 或收到 `room.dissolved` 才进入结束页。
 
 **时间线只呈现 RTM，`rtc.ts` 不采集 trace。** 混入 RTC 节点会稀释「RTM 数据流」这条主线。RTC 的成败体现为后续那次 RTM 调用的出现或缺席，因果仍然可读。
 
@@ -194,3 +200,13 @@ Issue 与 spec 以 markdown 文件形式存放在本仓库 `docs/scratch/` 下�
 ### Domain docs
 
 单上下文布局：根目录 `CONTEXT.md` + `docs/adr/`，两者均由 `/domain-modeling` 惰性创建。详见 `docs/agents/domain.md`。
+
+## 体验路径
+
+体验路径向左收为窄栏；手机展开时覆盖主区。只显示一级任务及状态，详细操作说明在悬浮、键盘聚焦或触屏点击时显示。子任务仅作为内部进度证据，不展示子任务列表。
+
+顶部只展示语聊房、1V1呼叫邀请、电商直播、在线课堂、虚拟世界、游戏互动、文档协同，不再展示二级导航。左侧共享体验路径包含场景任务、Console 创建项目入口和三项开发文档；没有配置 App ID 时仍可访问导航与资源。其他六个场景标明待开放，不生成完成进度。
+
+语聊房任务为连接入房、成员在线、上麦协同、房内消息、房间状态同步。任务进度由成功 API trace 和已消费的业务状态驱动；失败调用、默认房主麦位、本地消息回显不能冒充远端完成证据。清空数据流或切换房间不重置本次场景体验进度；离开场景后重新进入会重置。共享组件只呈现配置和进度，不操作 SDK。
+
+入口只保留房间名称与创建／加入操作，不展示宣传标题或装饰图标。时间线类型筛选同时展示与条目一致的 API 蓝色和事件绿色，不再另设图例。

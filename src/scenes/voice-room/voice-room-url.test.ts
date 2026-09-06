@@ -8,10 +8,10 @@ import {
   parseVoiceRoomUrl,
   payloadDirectoryEntry,
   withVoiceRoomPageIdentity,
-  type VoiceRoomUrlPayload,
+  type LegacyVoiceRoomUrlPayload,
 } from "./voice-room-url";
 
-function payload(overrides: Partial<VoiceRoomUrlPayload> = {}): VoiceRoomUrlPayload {
+function payload(overrides: Partial<LegacyVoiceRoomUrlPayload> = {}): LegacyVoiceRoomUrlPayload {
   return {
     localStorage: {
       "record-channel-list-20260818": {
@@ -93,7 +93,7 @@ describe("语聊房 URL payload", () => {
 
     expect(updated.pageUid).toBe("user-audience-1");
     expect(updated.nickname).toBe("Alice_037");
-    expect(updated.localStorage).toBe(initial.localStorage);
+    expect((updated as LegacyVoiceRoomUrlPayload).localStorage).toBe(initial.localStorage);
     expect(payloadDirectoryEntry(updated)).toEqual({
       storageKey: "record-channel-list-20260818",
       entry: Object.values(initial.localStorage)[0],

@@ -162,6 +162,9 @@ export class HostRoomRtm {
   private traceSeq = 0;
   private subscriptionGeneration = 0;
   private subscribed = false;
+  private roomDataClosed = false;
+  private cleanupPromise?: Promise<void>;
+  private readonly metadataWrites = new Set<Promise<unknown>>();
   private unbindEvents: (() => void) | undefined;
 
   /** Captures the logged-in port and the clock used by this Host instance. */
@@ -222,9 +225,19 @@ export class HostRoomRtm {
 
   /** Initializes all four authoritative room metadata keys from an empty snapshot revision. */
   async initializeRoom(data: RoomMetadataWrite[], majorRevision: number): Promise<void> {
-    await this.track("storage.setChannelMetadata", "initialize", () =>
-      this.port.setRoomMetadata(this.options.roomId, data, majorRevision),
-    );
+    await this.writeRoomMetadata(data, "initialize", majorRevision);
+  }
+
+  /** Stops further writes and removes this ended room's metadata after in-flight writes settle. */
+  clearRoomData(): Promise<void> {
+    this.roomDataClosed = true;
+    if (this.cleanupPromise) return this.cleanupPromise;
+    this.cleanupPromise = (async () => {
+      await Promise.allSettled([...this.metadataWrites]);
+      await this.track("storage.removeChannelMetadata", "清理已解散房间数据", () =>
+        this.port.removeRoomMetadata(this.options.roomId));
+    })().finally(() => { this.cleanupPromise = undefined; });
+    return this.cleanupPromise;
   }
 
   /** Writes the room announcement metadata key. */
@@ -339,9 +352,16 @@ export class HostRoomRtm {
 
   /** Performs one incremental room metadata write with API tracing. */
   private async setRoomMetadata(data: RoomMetadataWrite[], summary: string): Promise<void> {
-    await this.track("storage.setChannelMetadata", summary, () =>
-      this.port.setRoomMetadata(this.options.roomId, data),
-    );
+    await this.writeRoomMetadata(data, summary);
+  }
+
+  /** Tracks in-flight metadata mutations so cleanup can wait and prevent later writes. */
+  private async writeRoomMetadata(data: RoomMetadataWrite[], summary: string, majorRevision?: number): Promise<void> {
+    if (this.roomDataClosed) throw new Error("房间已解散，不能再修改房间数据");
+    const operation = this.track("storage.setChannelMetadata", summary, () =>
+      this.port.setRoomMetadata(this.options.roomId, data, majorRevision));
+    this.metadataWrites.add(operation);
+    try { await operation; } finally { this.metadataWrites.delete(operation); }
   }
 
   /** Performs one incremental Presence state write with API tracing. */

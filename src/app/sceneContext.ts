@@ -20,6 +20,7 @@
 import { createContext, useContext } from 'react';
 import type { ResolvedEnv } from './env';
 import type { TraceSource } from '../shared/timeline/useMergedTraces';
+import type { ExperienceProgress } from '../shared/experience/types';
 import type { VoiceRoomSceneProps } from '../scenes/voice-room/VoiceRoomScene';
 
 /** 场景可注入的依赖。目前只有语聊房一个已实现场景。 */
@@ -34,6 +35,7 @@ export interface SceneContextValue {
    * 每次渲染换新函数会让 effect 反复重跑。
    */
   publishTraceSources?: (sources: readonly TraceSource[]) => void;
+  publishExperienceProgress?: (progress: ExperienceProgress | undefined) => void;
   voiceRoomOverrides?: VoiceRoomOverrides;
 }
 

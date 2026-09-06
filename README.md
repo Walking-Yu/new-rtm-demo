@@ -3,17 +3,18 @@
 用真实的 Agora RTM Web SDK 演示信令场景。语聊房每个浏览器 Tab 只运行**一个角色和一个 RTM client**，
 并把当前角色的每一次 RTM 调用与回调事件实时画在时间线上。
 
-当前已实现 **语聊房**（Host 与 Audience 分别在独立 Tab 中运行）。注册表里另有 22 个已规划场景，
-点进去是占位页 —— 骨架、导航、时间线是共用的，新增场景只需补自己的目录。
+当前已实现 **语聊房**（Host 与 Audience 分别在独立 Tab 中运行）。顶部展示 7 个一级场景，另外 6 个入口为待建占位页。导航、体验路径和时间线共用，原有路由继续兼容。
 
 想从源码理解 RTM 在语聊房中的推荐用法，请从[《语聊房：RTM 最佳实践示例》](src/scenes/voice-room/README.md)开始。它串起页面级 RTM 会话、Host/Audience 角色操作、入站事件、业务状态和进一步的协议时序文档。
 
 ```
-一级 tab   社交 / 教育 / 企业 / 物联网 / 内容 / 医疗 / 出行 / 游戏
-二级 tab   该分类下的场景，已实现的可点进去，未实现的标「待建」
+顶部       语聊房 / 1V1呼叫邀请 / 电商直播 / 在线课堂 / 虚拟世界 / 游戏互动 / 文档协同
+左侧       体验路径：场景任务 → Console 创建项目 → 开发文档
 主区       场景本体（语聊房 = 当前 Tab 的单角色视图）
 右侧       时间线面板，展示当前角色的 RTM 调用与事件
 ```
+
+语聊房的 5 步体验任务：建立房间连接 → 看见成员在线 → 申请与审批上麦 → 发送房内消息 → 同步房间状态。多端步骤在另一窗口或设备输入相同房间名称即可加入，页面不再提供邀请链接输入；进度只随实际成功操作和接收事件更新。清空日志保留进度，离开场景后重新进入则重置。
 
 ---
 
@@ -209,11 +210,13 @@ App ID 不可互换；接入网关区域与防火墙白名单也不同 —— �
 ```
 index.html                 唯一入口，不包含真实 App ID
 
-src/app/                   实验室外壳：路由、两级 tab、env 解析、身份推导、样式
-src/scenes/registry.ts     8 个一级分类 + 23 个二级场景的注册表
+src/app/                   实验室外壳：路由、一级场景导航、env 解析、身份推导、样式
+src/app/experienceScenarios.ts  七个导航入口与场景任务配置
+src/scenes/registry.ts     原有分类与场景注册表，保留旧 URL 兼容
 src/scenes/voice-room/     唯一已实现的场景；单 Tab 单角色
   README.md                语聊房 RTM 最佳实践与源码阅读入口
   docs/                    语聊房对外文档、函数映射与进一步说明
+src/shared/experience/    可复用体验路径及进度类型
 src/shared/rtc.ts          全场景共享的 RTC 辅助模块
 src/shared/timeline/       trace store、多实例归并、过滤
 src/test/setup.ts          vitest 全局 setup
@@ -231,7 +234,10 @@ host/onRtmEvent.ts             房主端事件绑定与协议校验
 audience/rtm.ts                听众端原子 RTM 操作
 audience/onRtmEvent.ts         听众端事件绑定与协议校验
 app-rtm.ts                与单页面应用生命周期对齐的唯一 client、login/logout 与事件分发
-browser-room-directory.ts      Local Storage 房间目录
+browser-room-directory.ts      Local Storage 旧邀请兼容
+room-name.ts / name-directory.ts 名称规范化与共享目录状态
+host/name-directory-rtm.ts     Host 的名称登记、开放、解散与封禁
+audience/name-directory-rtm.ts Audience 的目录订阅与观察
 voice-room-url.ts              唯一 data 参数 codec
 room-entry-controller.ts       Host/Audience 归一化入房
 event-driven-single-room-client.ts 单角色业务桥接与事件 store
@@ -243,7 +249,7 @@ VoiceRoomScene.tsx 场景容器
 
 以下文件组成语聊房的 RTM 运行路径：
 
-先阅读[语聊房场景 README](src/scenes/voice-room/README.md)，了解 Storage、Presence 和 Message 在场景中的分工，以及生产环境必须由 App Server 替换的 Local Storage、nickname、token 和权限实现。单独复制一个 `rtm.ts` 不包含完整的收信和业务状态实现。
+先阅读[语聊房场景 README](src/scenes/voice-room/README.md)，了解 Storage、Presence 和 Message 在场景中的分工，以及共享名称目录的协作边界、旧邀请兼容、nickname、token 和权限实现。单独复制一个 `rtm.ts` 不包含完整的收信和业务状态实现。
 
 | 文件 | 说明 |
 | --- | --- |
@@ -273,3 +279,9 @@ VoiceRoomScene.tsx 场景容器
 
 本仓库自身的 demo 代码与文档采用 MIT，见 [`LICENSE`](LICENSE)。
 通过 npm 安装的 `agora-rtm` 与 `agora-rtc-sdk-ng` 各自遵循其自身许可证，不属于本仓库 MIT 许可证覆盖范围。
+
+## 按房间名称加入
+
+新房间支持同一 App ID 下唯一名称与跨设备加入。输入名称后读取 RTM 共享目录，无需复制房间信息；已有完整房间 URL 仍可直接打开，页面不再提供邀请链接输入。名称支持 1–32 个 Unicode 字符，统一全半角、首尾与连续空格、英文大小写。新入口使用 Web Crypto，请使用 HTTPS 或本机 localhost；名称房间不再保存本机最近记录。
+
+解散成功后该名称可重新创建，新房间使用不同的 roomId，旧邀请不会误入。旧版邀请仅保留原有能力，不自动获得名称查询或共享生命周期。实现与验证边界见[共享名称目录说明](src/scenes/voice-room/docs/按名称加入与共享目录.md)。

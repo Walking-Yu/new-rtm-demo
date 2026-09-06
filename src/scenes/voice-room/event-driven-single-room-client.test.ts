@@ -58,6 +58,7 @@ function setup(role: "host" | "audience", options: {
       operations.push(`presence:remove:${roomId}:${keys.join(",")}`);
       presenceRemovals.push([...keys]);
     },
+    async removeRoomMetadata(roomId) { operations.push(`storage:remove:${roomId}`); },
     async setRoomMetadata(roomId, data, majorRevision) {
       operations.push(`storage:set:${roomId}:${data.map(({ key }) => key).join(",")}:${majorRevision ?? "none"}`);
     },
@@ -191,7 +192,7 @@ describe("事件驱动 SingleRoomClient", () => {
         async setState() {},
         async removeState() {},
       },
-      storage: { async setChannelMetadata() {} },
+      storage: { async setChannelMetadata() {}, async removeChannelMetadata() {} },
     };
     const session = new AppRtmSession("app", "audience-1", {
       createClient: () => sdkClient,

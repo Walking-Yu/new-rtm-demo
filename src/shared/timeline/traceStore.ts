@@ -63,6 +63,8 @@ export interface TraceInput {
 }
 
 export interface TraceEntry extends TraceInput {
+  /** Stable presentation identity when one page retains several sources for the same role. */
+  sourceId?: string;
   /** 实例内单调递增序号。归并时作同毫秒的稳定次序。 */
   seq: number;
   /** 由实例自己贴，不由业务层读取时补 —— 归并后来源不能丢。 */

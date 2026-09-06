@@ -37,7 +37,7 @@ function createAppRtmSession(appId: string, userId: string): AppRtmSession {
         async setState() {},
         async removeState() {},
       },
-      storage: { async setChannelMetadata() {} },
+      storage: { async setChannelMetadata() {}, async removeChannelMetadata() {} },
     } as AppRtmClient),
   });
 }

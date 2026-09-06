@@ -1,11 +1,12 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
 import { LabRoutes, sceneComponents } from './App';
+import { experienceScenarios } from './experienceScenarios';
 import { capabilitiesOf } from '../scenes/capabilities';
-import { allScenes, sceneCategories } from '../scenes/registry';
+import { allScenes } from '../scenes/registry';
 import { createVoiceRoomFakes } from '../scenes/voice-room/testing';
 
 /** 已配置的 env，供大多数用例复用。 */
@@ -37,52 +38,55 @@ describe('实验室外壳', () => {
     expect(screen.queryByText(/App ID 来自/)).not.toBeInTheDocument();
   });
 
-  it('一级 tab 条列出全部 8 个分类', () => {
+  it('顶部只有指定的七个一级场景，直接指向对应内容', () => {
     renderApp();
-
-    const primaryNav = screen.getByRole('navigation', { name: '一级场景分类' });
-    for (const category of sceneCategories) {
-      expect(within(primaryNav).getByRole('link', { name: category.label })).toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: '一级场景分类' });
+    expect(within(nav).getAllByRole('link').map((link) => link.textContent)).toEqual([
+      '语聊房', '1V1呼叫邀请', '电商直播', '在线课堂', '虚拟世界', '游戏互动', '文档协同',
+    ]);
+    for (const scenario of experienceScenarios) {
+      expect(within(nav).getByRole('link', { name: scenario.label })).toHaveAttribute('href', scenario.path);
     }
-    expect(within(primaryNav).getAllByRole('link')).toHaveLength(8);
+    expect(screen.queryByRole('navigation', { name: '二级场景' })).not.toBeInTheDocument();
+    expect(within(nav).getByRole('link', { name: '语聊房' })).toHaveAttribute('aria-current', 'page');
   });
 
-  it('二级 tab 条只列出当前一级分类下的场景', () => {
-    renderApp();
-
-    const secondaryNav = screen.getByRole('navigation', { name: '二级场景' });
-    // 默认落在社交分类，它有 6 个场景
-    expect(within(secondaryNav).getAllByRole('link')).toHaveLength(6);
-    expect(within(secondaryNav).getByRole('link', { name: /语聊房/ })).toBeInTheDocument();
-  });
-
-  it('切一级分类后二级 tab 条随之更新', async () => {
+  it('所有未建场景可切换，标题和体验路径随场景变化', async () => {
     const user = userEvent.setup();
     renderApp();
-
-    await user.click(screen.getByRole('link', { name: '游戏' }));
-
-    const secondaryNav = screen.getByRole('navigation', { name: '二级场景' });
-    expect(within(secondaryNav).getAllByRole('link')).toHaveLength(1);
-    expect(within(secondaryNav).getByRole('link', { name: /游戏语音房/ })).toBeInTheDocument();
-  });
-
-  it('计划中场景的 tab 可点，不是 disabled —— 灰置会让客户以为坏了', () => {
-    renderApp();
-
-    const secondaryNav = screen.getByRole('navigation', { name: '二级场景' });
-    for (const link of within(secondaryNav).getAllByRole('link')) {
-      expect(link).not.toHaveAttribute('aria-disabled', 'true');
+    for (const scenario of experienceScenarios.filter((item) => item.status === 'planned')) {
+      const link = within(screen.getByRole('navigation')).getByRole('link', { name: scenario.label });
+      await user.click(link);
+      expect(link).toHaveAttribute('aria-current', 'page');
+      expect(within(screen.getByTestId('scene-placeholder')).getByRole('heading', { name: scenario.label })).toBeInTheDocument();
+      const path = screen.getByRole('complementary', { name: '体验路径' });
+      expect(within(path).getByText(`${scenario.label}的体验任务正在准备中。`)).toBeInTheDocument();
+      expect(within(path).queryByRole('progressbar')).not.toBeInTheDocument();
     }
   });
 
-  it('外壳是自上而下四层，底部预留区存在但本票不实现内容', () => {
+  it('体验路径有五步任务、Console 和三项文档入口，悬浮说明不会手动完成任务', async () => {
+    const user = userEvent.setup();
     renderApp();
-
-    expect(screen.getByRole('navigation', { name: '一级场景分类' })).toBeInTheDocument();
-    expect(screen.getByRole('navigation', { name: '二级场景' })).toBeInTheDocument();
-    expect(screen.getByRole('main')).toBeInTheDocument();
-    expect(screen.getByTestId('bottom-reserved')).toBeInTheDocument();
+    const path = screen.getByRole('complementary', { name: '体验路径' });
+    expect(within(path).getByRole('heading', { name: /场景任务/ })).toBeInTheDocument();
+    expect(within(path).getByRole('heading', { name: /开始构建/ })).toBeInTheDocument();
+    expect(within(path).getByRole('heading', { name: /开发文档/ })).toBeInTheDocument();
+    expect(within(path).getByRole('progressbar')).toHaveAttribute('aria-valuemax', '5');
+    for (const step of experienceScenarios[0].steps) {
+      const button = within(path).getByRole('button', { name: new RegExp(step.title) });
+      await user.hover(button);
+      expect(screen.getByRole('tooltip')).toHaveTextContent(step.instruction);
+      expect(within(path).queryByText(step.milestones[0].label)).not.toBeInTheDocument();
+      await user.unhover(button);
+      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    }
+    expect(within(path).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
+    for (const label of ['前往 Console 创建项目', '产品简介', '最佳实践', 'API参考']) {
+      const link = within(path).getByRole('link', { name: label });
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link.getAttribute('href')).toMatch(/^https:\/\//);
+    }
   });
 
   it('时间线面板占位存在于主体内', () => {
@@ -139,19 +143,19 @@ describe('实验室外壳', () => {
     expect(screen.queryByRole('separator', { name: '调整房间与数据流宽度' })).not.toBeInTheDocument();
   });
 
-  it('切换场景只替换主区内容，两级 tab 与时间线面板不动', async () => {
+  it('切换场景只替换主区内容，导航、体验路径与时间线面板不动', async () => {
     const user = userEvent.setup();
     renderApp({ path: '/social/voice-room' });
 
     const primaryNav = screen.getByRole('navigation', { name: '一级场景分类' });
-    const secondaryNav = screen.getByRole('navigation', { name: '二级场景' });
+    const path = screen.getByRole('complementary', { name: '体验路径' });
     const timeline = screen.getByRole('complementary', { name: '时间线' });
 
-    await user.click(screen.getByRole('link', { name: /连麦、PK/ }));
+    await user.click(screen.getByRole('link', { name: '1V1呼叫邀请' }));
 
     // 同一批 DOM 节点仍在原位（未被卸载重建）
     expect(screen.getByRole('navigation', { name: '一级场景分类' })).toBe(primaryNav);
-    expect(screen.getByRole('navigation', { name: '二级场景' })).toBe(secondaryNav);
+    expect(screen.getByRole('complementary', { name: '体验路径' })).toBe(path);
     expect(screen.getByRole('complementary', { name: '时间线' })).toBe(timeline);
   });
 });
@@ -223,7 +227,8 @@ describe('占位页', () => {
     // 抹掉它们之后剩下的引导文案必须完全相同 —— 那部分是共用的，不逐场景撰写。
     const strip = (text: string, sceneId: string) => {
       const scene = allScenes.find((entry) => entry.id === sceneId)!;
-      let stripped = text.replace(scene.title, '').replace(scene.summary, '');
+      const experience = experienceScenarios.find((item) => item.path.endsWith(`/${sceneId}`));
+      let stripped = text.replace(experience?.label ?? scene.title, '').replace(experience?.description ?? scene.summary, '');
       for (const capability of capabilitiesOf(sceneId)) {
         stripped = stripped.replaceAll(capability, '');
       }
@@ -254,6 +259,7 @@ describe('env 未配置', () => {
     renderApp({ env: { configured: false }, path: '/social/voice-room' });
 
     expect(screen.getByTestId('env-guide')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '前往 Console 创建项目' })).toBeInTheDocument();
     expect(screen.queryByTestId('scene-voice-room')).not.toBeInTheDocument();
   });
 

@@ -37,6 +37,7 @@ function createFakeClient(options: { failLogin?: boolean } = {}) {
       async removeState(roomId) { operations.push(`presence:remove:${roomId}`); },
     },
     storage: {
+      async removeChannelMetadata(roomId) { operations.push(`storage:remove:${roomId}`); },
       async setChannelMetadata(roomId, _type, _data, metadataOptions) {
         operations.push(`storage:set:${roomId}:${metadataOptions?.majorRevision ?? "none"}`);
       },

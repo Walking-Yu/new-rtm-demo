@@ -1,24 +1,16 @@
-/**
- * 实验室外壳与路由。
- *
- * 外壳自上而下四层（见 spec「实验室外壳布局」）：
- * 一级 tab 条 → 二级 tab 条 → 主体（主区 + 时间线面板）→ 底部预留区。
- *
- * 布局数值由 CSS 承载，均为用户两轮确认过的具体值，**不要回退**：
- * 主区与时间线 `1fr / 400px`、折叠态 `1fr / 40px`、1240px 及以下退化为单列。
- *
- * 切换场景只替换主区内容 —— 靠 layout route + `<Outlet />` 保证两级 tab 与
- * 时间线面板的 DOM 节点不被卸载重建。
- */
+/** Persistent single-level navigation, shared experience guide, scene and RTM timeline. */
 
 import { useCallback, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom';
 
 import { EnvGuide } from './EnvGuide';
+import { experienceForPath, experienceScenarios } from './experienceScenarios';
+import { ExperiencePath } from '../shared/experience/ExperiencePath';
+import type { ExperienceProgress } from '../shared/experience/types';
 import { ScenePlaceholder } from './ScenePlaceholder';
 import type { ResolvedEnv } from './env';
 import { SceneContextProvider, useSceneContext, type VoiceRoomOverrides } from './sceneContext';
-import { findCategory, findScene, sceneCategories } from '../scenes/registry';
+import { findCategory, findScene } from '../scenes/registry';
 import { TimelinePanel } from '../shared/timeline/TimelinePanel';
 import type { TraceSource } from '../shared/timeline/useMergedTraces';
 import { VoiceRoomScene } from '../scenes/voice-room/VoiceRoomScene';
@@ -26,59 +18,20 @@ import { VoiceRoomScene } from '../scenes/voice-room/VoiceRoomScene';
 /** 唯一已实现的场景，兼作根路径的落点。 */
 const DEFAULT_PATH = '/social/voice-room';
 
-/**
- * 一级 tab 条：logo + 8 个分类。
- */
-function PrimaryTabs({ activeCategoryId }: { activeCategoryId: string }) {
+/** One public entry per scenario; preserve existing URLs for invitation compatibility. */
+function PrimaryTabs({ activePath }: { activePath: string }) {
   return (
     <header className="lab-topbar">
-      <div className="lab-logo">
-        <span className="lab-logo__mark" aria-hidden="true" />
-        RTM 场景实验室
-      </div>
+      <div className="lab-logo"><span className="lab-logo__mark" aria-hidden="true" />RTM 场景实验室</div>
       <nav className="lab-tabs lab-tabs--primary" aria-label="一级场景分类">
-        {sceneCategories.map((category) => (
-          <Link
-            key={category.id}
-            to={`/${category.id}/${category.scenes[0].id}`}
-            className="lab-tab lab-tab--primary"
-            data-active={category.id === activeCategoryId}
-            aria-label={category.label}
-          >
-            {/* 完整 label 与窄屏短名各渲染一份，由 CSS 断点决定显示哪个。 */}
-            <span className="lab-tab__full">{category.label}</span>
-            <span className="lab-tab__short">{category.shortLabel}</span>
+        {experienceScenarios.map((scenario) => (
+          <Link key={scenario.id} to={scenario.path} className="lab-tab lab-tab--primary"
+            data-active={scenario.path === activePath} aria-current={scenario.path === activePath ? 'page' : undefined}>
+            {scenario.label}
           </Link>
         ))}
       </nav>
     </header>
-  );
-}
-
-/**
- * 二级 tab 条：药丸形，当前一级分类下的场景。
- *
- * 已规划场景的 tab **可见且可点**，只加一个「待建」文字标记 —— 不 disabled
- * （灰置会让客户以为坏了）、不隐藏（违背展示目的）。
- */
-function SecondaryTabs({ categoryId, activeSceneId }: { categoryId: string; activeSceneId: string }) {
-  const category = findCategory(categoryId);
-
-  return (
-    <nav className="lab-tabs lab-tabs--secondary" aria-label="二级场景">
-      {category?.scenes.map((scene) => (
-        <Link
-          key={scene.id}
-          to={`/${categoryId}/${scene.id}`}
-          className="lab-tab lab-tab--secondary"
-          data-active={scene.id === activeSceneId}
-          data-status={scene.status}
-        >
-          {scene.title}
-          {scene.status === 'planned' && <span className="lab-tab__flag">待建</span>}
-        </Link>
-      ))}
-    </nav>
   );
 }
 
@@ -94,18 +47,9 @@ const MIN_TIMELINE_WIDTH = 400;
 const SPLITTER_WIDTH = 18;
 const KEYBOARD_RESIZE_STEP = 24;
 
-/**
- * 语聊房主区：真实的双客户端编排。
- *
- * env 与 trace 回调从上下文取 —— 场景由注册表按 id 查出来渲染，中间隔着路由，
- * 没法用 props 传（见 `sceneContext.ts`）。
- *
- * 未配置 appId 时不渲染场景：`VoiceRoomScene` 一挂载就自动连接，没有 appId
- * 连不上，只会在时间线里刷一串失败。外层路由本就会在未配置时渲染引导页，这里
- * 只是把不变式挑明。
- */
+/** Mount the real scene only when configured; the shell and resource links remain available. */
 function VoiceRoomContainer() {
-  const { env, publishTraceSources, voiceRoomOverrides } = useSceneContext();
+  const { env, publishTraceSources, publishExperienceProgress, voiceRoomOverrides } = useSceneContext();
   if (!env.configured) return <EnvGuide />;
   return (
     <div data-testid="scene-voice-room">
@@ -114,6 +58,7 @@ function VoiceRoomContainer() {
         search={window.location.search}
         overrides={voiceRoomOverrides}
         onTraceSources={publishTraceSources}
+        onExperienceProgress={publishExperienceProgress}
       />
     </div>
   );
@@ -148,12 +93,12 @@ function SceneRoute() {
 
   if (!scene) return <SceneNotFound />;
 
-  // 一级分类必须真的包含这个二级场景。放行错配的 URL（如 /gaming/voice-room）
-  // 会让二级 tab 没有 active 项，「一级 / 二级」的从属关系形同虚设。
+  // Validate legacy category/scene URLs even though navigation exposes a single level.
   const belongsToCategory = findCategory(categoryId)?.scenes.some((item) => item.id === sceneId);
   if (!belongsToCategory) return <SceneNotFound />;
 
-  if (scene.status === 'planned') return <ScenePlaceholder scene={scene} />;
+  const experience = experienceForPath(`/${categoryId}/${sceneId}`);
+  if (scene.status === 'planned') return <ScenePlaceholder scene={experience ? { ...scene, title: experience.label, summary: experience.description } : scene} />;
 
   const SceneContainer = sceneComponents.get(scene.id);
   if (!SceneContainer) return <SceneNotFound />;
@@ -166,12 +111,14 @@ interface LabShellProps {
 }
 
 /**
- * 四层外壳。作为 layout route，`<Outlet />` 之外的部分在场景切换时保持挂载。
+ * 共享外壳。作为 layout route，`<Outlet />` 之外的部分在场景切换时保持挂载。
  */
 function LabShell({ env, voiceRoomOverrides }: LabShellProps) {
   const { categoryId = '', sceneId = '' } = useParams();
   // 折叠态由外壳持有，不由面板自己 —— 它要改 `.lab-body` 的栅格（1fr/400px → 1fr/40px），
   // 那是外壳的样式，面板拿不到。
+  const experience = experienceForPath(`/${categoryId}/${sceneId}`);
+  const [experienceProgress, setExperienceProgress] = useState<ExperienceProgress>();
   const [collapsed, setCollapsed] = useState(false);
   const [timelineWidth, setTimelineWidth] = useState<number>();
   const [resizing, setResizing] = useState(false);
@@ -189,7 +136,7 @@ function LabShell({ env, voiceRoomOverrides }: LabShellProps) {
   }, []);
 
   const sceneContext = useMemo(
-    () => ({ env, publishTraceSources, voiceRoomOverrides }),
+    () => ({ env, publishTraceSources, voiceRoomOverrides, publishExperienceProgress: setExperienceProgress }),
     [env, publishTraceSources, voiceRoomOverrides],
   );
 
@@ -213,79 +160,81 @@ function LabShell({ env, voiceRoomOverrides }: LabShellProps) {
 
   return (
     <div className="lab-shell">
-      <PrimaryTabs activeCategoryId={categoryId} />
-      <SecondaryTabs categoryId={categoryId} activeSceneId={sceneId} />
-      <div
-        ref={bodyRef}
-        className="lab-body"
-        data-timeline={collapsed ? 'collapsed' : 'expanded'}
-        data-resizing={resizing}
-        style={timelineWidth === undefined ? undefined : {
-          '--lab-timeline-width': `${timelineWidth}px`,
-        } as CSSProperties}
-      >
-        <main className="lab-main">
-          <SceneContextProvider value={sceneContext}>
-            <Outlet />
-          </SceneContextProvider>
-        </main>
-        {!collapsed && (
-          <div
-            className="lab-splitter"
-            role="separator"
-            aria-label="调整房间与数据流宽度"
-            aria-orientation="vertical"
-            aria-valuemin={MIN_TIMELINE_WIDTH}
-            aria-valuenow={timelineWidth === undefined ? undefined : Math.round(timelineWidth)}
-            tabIndex={0}
-            onPointerDown={(event) => {
-              if (event.button !== 0) return;
-              dragRef.current = {
-                startX: event.clientX,
-                startWidth: currentTimelineWidth(event.currentTarget),
-              };
-              try {
-                event.currentTarget.setPointerCapture?.(event.pointerId);
-              } catch {
-                // 合成 PointerEvent 没有浏览器级 active pointer，拖拽状态仍可继续处理。
-              }
-              setResizing(true);
-            }}
-            onPointerMove={(event) => {
-              const drag = dragRef.current;
-              if (!drag) return;
-              setTimelineWidth(clampTimelineWidth(drag.startWidth + drag.startX - event.clientX));
-            }}
-            onPointerUp={(event) => {
-              dragRef.current = undefined;
-              if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-                event.currentTarget.releasePointerCapture(event.pointerId);
-              }
-              setResizing(false);
-            }}
-            onPointerCancel={() => {
-              dragRef.current = undefined;
-              setResizing(false);
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-              event.preventDefault();
-              const direction = event.key === 'ArrowLeft' ? 1 : -1;
-              setTimelineWidth(clampTimelineWidth(
-                currentTimelineWidth(event.currentTarget) + direction * KEYBOARD_RESIZE_STEP,
-              ));
-            }}
-          >
-            <span aria-hidden="true" />
-          </div>
-        )}
-        <TimelinePanel
-          sources={traceSources}
-          collapsed={collapsed}
-          onToggleCollapsed={() => setCollapsed((current) => !current)}
-        />
+      <PrimaryTabs activePath={`/${categoryId}/${sceneId}`} />
+      <div className="lab-workspace">
+        <ExperiencePath scenario={experience} progress={experienceProgress} />
+        <div
+          ref={bodyRef}
+          className="lab-body"
+          data-timeline={collapsed ? 'collapsed' : 'expanded'}
+          data-resizing={resizing}
+          style={timelineWidth === undefined ? undefined : {
+            '--lab-timeline-width': `${timelineWidth}px`,
+          } as CSSProperties}
+        >
+          <main className="lab-main">
+            <SceneContextProvider value={sceneContext}>
+              <Outlet />
+            </SceneContextProvider>
+          </main>
+          {!collapsed && (
+            <div
+              className="lab-splitter"
+              role="separator"
+              aria-label="调整房间与数据流宽度"
+              aria-orientation="vertical"
+              aria-valuemin={MIN_TIMELINE_WIDTH}
+              aria-valuenow={timelineWidth === undefined ? undefined : Math.round(timelineWidth)}
+              tabIndex={0}
+              onPointerDown={(event) => {
+                if (event.button !== 0) return;
+                dragRef.current = {
+                  startX: event.clientX,
+                  startWidth: currentTimelineWidth(event.currentTarget),
+                };
+                try {
+                  event.currentTarget.setPointerCapture?.(event.pointerId);
+                } catch {
+                  // 合成 PointerEvent 没有浏览器级 active pointer，拖拽状态仍可继续处理。
+                }
+                setResizing(true);
+              }}
+              onPointerMove={(event) => {
+                const drag = dragRef.current;
+                if (!drag) return;
+                setTimelineWidth(clampTimelineWidth(drag.startWidth + drag.startX - event.clientX));
+              }}
+              onPointerUp={(event) => {
+                dragRef.current = undefined;
+                if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+                setResizing(false);
+              }}
+              onPointerCancel={() => {
+                dragRef.current = undefined;
+                setResizing(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                const direction = event.key === 'ArrowLeft' ? 1 : -1;
+                setTimelineWidth(clampTimelineWidth(
+                  currentTimelineWidth(event.currentTarget) + direction * KEYBOARD_RESIZE_STEP,
+                ));
+              }}
+            >
+              <span aria-hidden="true" />
+            </div>
+          )}
+          <TimelinePanel
+            sources={traceSources}
+            collapsed={collapsed}
+            onToggleCollapsed={() => setCollapsed((current) => !current)}
+          />
+        </div>
       </div>
-      {/* 场景说明与能力标签的落点，本票不实现内容（见 spec 布局第四层）。 */}
+      {/* Reserved for additional scenario content. */}
       <div className="lab-bottom" data-testid="bottom-reserved" />
     </div>
   );
@@ -307,9 +256,6 @@ export interface LabRoutesProps {
  * `MemoryRouter` 指定起始路径，生产代码用 `BrowserRouter`。
  */
 export function LabRoutes({ env, voiceRoomOverrides }: LabRoutesProps) {
-  // 渲染任何场景之前先过配置判定：未配置则只有引导页，不进场景。
-  if (!env.configured) return <EnvGuide />;
-
   return (
     <Routes>
       <Route path="/" element={<Navigate to={DEFAULT_PATH} replace />} />

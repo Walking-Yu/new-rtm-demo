@@ -118,13 +118,13 @@ test.describe('外壳与导航', () => {
     await withAppId(page);
   });
 
-  test('首页渲染，8 个一级 tab 可见', async ({ page }) => {
+  test('首页渲染，7 个一级场景 可见', async ({ page }) => {
     const unexpected = collectErrors(page);
     await page.goto('/');
 
     const primaryNav = page.getByRole('navigation', { name: '一级场景分类' });
     await expect(primaryNav).toBeVisible();
-    await expect(primaryNav.getByRole('link')).toHaveCount(8);
+    await expect(primaryNav.getByRole('link')).toHaveCount(7);
 
     expect(unexpected()).toEqual([]);
   });
@@ -134,21 +134,18 @@ test.describe('外壳与导航', () => {
     await expect(page).toHaveURL(/\/social\/voice-room$/);
   });
 
-  test('切一级 tab 后二级 tab 跟着换', async ({ page }) => {
+  test('一级导航直接切换场景，体验路径显示对应状态', async ({ page }) => {
     const unexpected = collectErrors(page);
     await page.goto('/');
-
-    const secondaryNav = page.getByRole('navigation', { name: '二级场景' });
-    // 默认落在社交分类，它有 6 个场景
-    await expect(secondaryNav.getByRole('link')).toHaveCount(6);
-
     await waitForPlaceholderLoginToSettle(page);
-    await page.getByRole('link', { name: '游戏' }).click();
-
-    // 游戏分类只有 1 个场景
-    await expect(secondaryNav.getByRole('link')).toHaveCount(1);
-    await expect(secondaryNav.getByRole('link', { name: /游戏语音房/ })).toBeVisible();
-
+    await page.getByRole('link', { name: '游戏互动' }).click();
+    await expect(page.getByRole('navigation', { name: '二级场景' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '游戏互动' })).toBeVisible();
+    const path = page.getByRole('complementary', { name: '体验路径' });
+    if (await path.getByRole('button', { name: '体验路径' }).getAttribute('aria-expanded') === 'false') {
+      await path.getByRole('button', { name: '体验路径' }).click();
+    }
+    await expect(path.getByText('游戏互动的体验任务正在准备中。')).toBeVisible();
     expect(unexpected()).toEqual([]);
   });
 
@@ -157,7 +154,7 @@ test.describe('外壳与导航', () => {
     await page.goto('/');
 
     await waitForPlaceholderLoginToSettle(page);
-    await page.getByRole('link', { name: /连麦、PK/ }).click();
+    await page.getByRole('link', { name: '1V1呼叫邀请' }).click();
 
     const placeholder = page.getByTestId('scene-placeholder');
     await expect(placeholder).toBeVisible();
@@ -167,19 +164,19 @@ test.describe('外壳与导航', () => {
     expect(unexpected()).toEqual([]);
   });
 
-  test('切换场景时两级 tab 与时间线面板不重建', async ({ page }) => {
+  test('切换场景时导航、体验路径与时间线保持可用', async ({ page }) => {
     await page.goto('/');
 
     const timeline = page.getByRole('complementary', { name: '时间线' });
     await expect(timeline).toBeVisible();
 
     await waitForPlaceholderLoginToSettle(page);
-    await page.getByRole('link', { name: /连麦、PK/ }).click();
+    await page.getByRole('link', { name: '1V1呼叫邀请' }).click();
     await expect(page.getByTestId('scene-placeholder')).toBeVisible();
 
     // 两级 tab 与时间线仍在原位（layout route 之外的部分不随场景切换卸载）
     await expect(page.getByRole('navigation', { name: '一级场景分类' })).toBeVisible();
-    await expect(page.getByRole('navigation', { name: '二级场景' })).toBeVisible();
+    await expect(page.getByRole('complementary', { name: '体验路径' })).toBeVisible();
     await expect(timeline).toBeVisible();
   });
 });
@@ -195,14 +192,17 @@ test.describe('语聊房场景', () => {
 
     await expect(page.getByTestId('voice-room-entry')).toBeVisible();
     await expect(page.getByLabel('房间标题')).toBeVisible();
-    await expect(page.getByLabel('邀请链接')).toBeVisible();
+    await expect(page.getByText('在声音里，相遇', { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId('voice-room-entry').locator('.vr-entry__hero, .vr-entry__choice-panel > span')).toHaveCount(0);
+    await expect(page.getByLabel('加入的房间名称')).toBeVisible();
+    await expect(page.getByText('通过邀请链接加入', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('房主语聊房')).toHaveCount(0);
     await expect(page.getByLabel('听众语聊房')).toHaveCount(0);
 
     expect(unexpected()).toEqual([]);
   });
 
-  test('Host/Audience 入口与房间列表在定高卡片内可滚动到达', async ({ page }) => {
+  test('Host/Audience 入口在定高卡片内可滚动到达', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 577 });
     await page.goto('/social/voice-room');
     await expect(page.getByTestId('voice-room-entry')).toBeVisible();
@@ -217,24 +217,23 @@ test.describe('语聊房场景', () => {
     }));
 
     expect(dimensions.clientHeight).toBeLessThanOrEqual(520);
-    expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight);
+    expect(dimensions.scrollHeight).toBeGreaterThanOrEqual(dimensions.clientHeight);
     const entryBox = await entry.boundingBox();
     const timelineBox = await timeline.boundingBox();
     expect(Math.abs((entryBox!.y + entryBox!.height) - (timelineBox!.y + timelineBox!.height))).toBeLessThanOrEqual(1);
     await audiencePanel.scrollIntoViewIfNeeded();
-    await expect(page.getByLabel('邀请链接')).toBeVisible();
-    await page.getByText('本机最近房间').scrollIntoViewIfNeeded();
-    await expect(page.getByText('本机最近房间')).toBeVisible();
+    await expect(page.getByLabel('加入的房间名称')).toBeVisible();
+    await expect(page.getByText('通过邀请链接加入', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('本机最近房间')).toHaveCount(0);
   });
 
-  test('Host 创建时先挂载房间壳与 loading 蒙层，订阅后移除蒙层', async ({ page, context }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  test('Host 创建时先挂载房间壳与 loading 蒙层，订阅后移除蒙层', async ({ page }) => {
     await page.goto('/social/voice-room');
 
     await page.getByLabel('房间标题').fill('E2E 房间');
     await page.getByRole('button', { name: '创建并进入' }).click();
     await expect(page.getByLabel('房主语聊房')).toBeVisible();
-    await expect(page.getByTestId('voice-room-loading-overlay')).toContainText('正在加载房间…');
+    await expect(page.getByTestId('voice-room-loading-overlay')).toContainText('正在准备房间…');
     await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
     await expect(page.getByLabel('房主语聊房').getByText('房主视角', { exact: true })).toBeVisible();
     await expect(page.getByLabel('房主语聊房').locator('.vr-single__header')).not.toContainText(/host-/);
@@ -250,12 +249,7 @@ test.describe('语聊房场景', () => {
     expect(new Set(controlBounds.map(({ right }) => right)).size).toBe(1);
 
     const room = page.getByLabel('房主语聊房');
-    await room.getByRole('button', { name: '复制观众邀请链接' }).click();
-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
-      .toMatch(/^http:\/\/127\.0\.0\.1:4173\/social\/voice-room\?data=[A-Za-z0-9_-]+$/);
-    const toast = room.getByText('已复制完整邀请链接');
-    await expect(toast).toBeVisible();
-    await expect(toast).toHaveCount(0, { timeout: 4_000 });
+    await expect(room.getByRole('button', { name: '复制观众邀请链接' })).toHaveCount(0);
   });
 
   test('移动端首次加载停留在页面顶部，不被公屏自动滚动带走', async ({ page }) => {
@@ -266,20 +260,13 @@ test.describe('语聊房场景', () => {
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
   });
 
-  test('choose 页直接提供 Audience 邀请 URL 输入和本地目录空态', async ({ page }) => {
+  test('choose 页仅提供名称入口，不展示邀请输入和最近房间', async ({ page }) => {
     await page.goto('/social/voice-room');
-    await expect(page.getByLabel('邀请链接')).toBeVisible();
-    await expect(page.getByText('暂无可加入的本地房间。')).toBeVisible();
-  });
-
-  test('Audience 粘贴 data 邀请内容后进入单端房间', async ({ page }) => {
-    await page.goto('/social/voice-room');
-    await page.getByLabel('邀请链接').fill(`data=${audienceInviteData('voice-room-test')}`);
-    await page.getByRole('button', { name: '加入房间' }).click();
-
-    await expect(page.getByLabel('听众语聊房')).toBeVisible();
-    await expect(page.getByLabel('听众语聊房').getByText('听众视角', { exact: true })).toBeVisible();
-    await expect(page.getByLabel('听众语聊房').locator('.vr-single__header')).not.toContainText(/audience-/);
+    await expect(page.getByLabel('加入的房间名称')).toBeVisible();
+    await expect(page.getByText('通过邀请链接加入', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('暂无可加入的本地房间。')).toHaveCount(0);
+    await expect(page.getByLabel('邀请链接', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '通过邀请加入', exact: true })).toHaveCount(0);
   });
 
   test('Audience 直达邀请 URL 不闪现 choose，成功后 URL 仍只有 data', async ({ page }) => {
@@ -402,4 +389,179 @@ test.describe('env 未配置', () => {
 
     expect(unexpected()).toEqual([]);
   });
+});
+
+
+test.describe('体验路径与工作台适配', () => {
+  test.beforeEach(async ({ page }) => { await withAppId(page); });
+
+  test('连接入房推进任务；公屏本地回显不完成双向互动，清空日志保留进度', async ({ page }) => {
+    await page.goto('/social/voice-room');
+    const path = page.getByRole('complementary', { name: '体验路径' });
+    const toggle = path.getByRole('button', { name: '体验路径' });
+    if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+    const progress = path.getByRole('progressbar');
+    await expect(progress).toHaveAttribute('aria-valuenow', '0');
+    const mobileGuide = (page.viewportSize()?.width ?? 1440) <= 800;
+    if (mobileGuide) await toggle.click();
+    await page.getByLabel('房间标题').fill('体验路径验证');
+    await page.getByRole('button', { name: '创建并进入' }).click();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    if (mobileGuide) await toggle.click();
+    await expect(progress).toHaveAttribute('aria-valuenow', '1');
+    await expect(path.getByRole('button', { name: '建立房间连接 已完成' })).toBeVisible();
+    if (mobileGuide) await toggle.click();
+    const room = page.getByLabel('房主语聊房');
+    await room.getByLabel('聊天内容').fill('本端测试消息');
+    await room.getByLabel('聊天内容').press('Enter');
+    if (mobileGuide) await toggle.click();
+    await expect(path.getByRole('button', { name: '发送房内消息 进行中' })).toBeVisible();
+    await expect(progress).toHaveAttribute('aria-valuenow', '1');
+    if (mobileGuide) await toggle.click();
+    await page.getByRole('button', { name: '清空', exact: true }).click();
+    if (mobileGuide) await toggle.click();
+    await expect(progress).toHaveAttribute('aria-valuenow', '1');
+    if (mobileGuide) await toggle.click();
+    await page.getByRole('link', { name: '电商直播', exact: true }).click();
+    await page.getByRole('link', { name: '语聊房', exact: true }).click();
+    if (mobileGuide) await toggle.click();
+    await expect(progress).toHaveAttribute('aria-valuenow', '0');
+  });
+
+  test('体验路径向左收起，说明悬浮或聚焦显示且不展开子任务', async ({ page }, testInfo) => {
+    await page.goto('/social/voice-room');
+    await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+    const path = page.getByRole('complementary', { name: '体验路径' });
+    const toggle = path.getByRole('button', { name: '体验路径', exact: true });
+    const mobile = (page.viewportSize()?.width ?? 1440) <= 800;
+    if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+    const expanded = await path.boundingBox();
+    const mainBefore = await page.locator('.lab-body').boundingBox();
+    expect(expanded!.width).toBeGreaterThanOrEqual(250);
+    const step = path.getByRole('button', { name: /^建立房间连接/ });
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
+    if (mobile) await step.tap(); else await step.hover();
+    await expect(page.getByRole('tooltip')).toContainText('填写名称创建房间');
+    const tipBox = await page.getByRole('tooltip').boundingBox();
+    expect(tipBox!.x).toBeGreaterThanOrEqual(0);
+    expect(tipBox!.x + tipBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    await expect(path.locator('ol > li')).toHaveCount(5);
+    await expect(path.locator('li ul')).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('task-help.png') });
+    await step.press('Escape');
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
+    await step.focus();
+    await toggle.click();
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
+    const collapsed = await path.boundingBox();
+    expect(collapsed!.width).toBeLessThanOrEqual(50);
+    expect(collapsed!.x).toBe(expanded!.x);
+    const mainAfter = await page.locator('.lab-body').boundingBox();
+    if (!mobile) expect(mainAfter!.width - mainBefore!.width).toBeGreaterThan(190);
+    await expect(page.getByLabel('加入的房间名称')).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('guide-collapsed.png') });
+    await toggle.click();
+    await expect(path.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
+    if (mobile) {
+      await page.getByRole('button', { name: '收起体验路径', exact: true }).click({ position: { x: 350, y: 300 } });
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    }
+  });
+
+  test('从桌面到手机，房间与通用组件不产生页面横向溢出', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop-chromium', '在一个浏览器中验证所有宽度');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto('/social/voice-room');
+    await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('desktop-entry.png') });
+    await page.getByLabel('房间标题').fill('布局验证房间');
+    await page.getByRole('button', { name: '创建并进入' }).click();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    await expect(page.getByLabel('房主语聊房')).toBeVisible();
+    for (const width of [1440, 1280, 1100, 900, 800, 412]) {
+      await page.setViewportSize({ width, height: 1000 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `页面宽度 ${width}`).toBe(true);
+      const room = page.getByLabel('房主语聊房');
+      const roomBounds = await room.boundingBox();
+      for (const name of ['发送聊天', '发送礼物消息', '发送爱心消息', '闭麦']) {
+        const bounds = await room.getByRole('button', { name, exact: true }).boundingBox();
+        expect(bounds!.width, `${width} 下 ${name} 的按钮宽度`).toBeGreaterThanOrEqual(32);
+        expect(bounds!.y + bounds!.height, `${width} 下 ${name} 不被房间裁切`).toBeLessThanOrEqual(roomBounds!.y + roomBounds!.height);
+      }
+      if ([1440, 1280, 412].includes(width)) await page.screenshot({ path: testInfo.outputPath(`room-${width}.png`), fullPage: true });
+    }
+    const path = page.getByRole('complementary', { name: '体验路径' });
+    for (const name of ['前往 Console 创建项目', '产品简介', '最佳实践', 'API参考']) {
+      await path.getByRole('link', { name, exact: true }).scrollIntoViewIfNeeded();
+      await expect(path.getByRole('link', { name, exact: true })).toBeVisible();
+    }
+  });
+});
+
+
+test('名称入口：查无房间、名称占用和离房后按名称加入', async ({ page }) => {
+  await withAppId(page);
+  const errors = collectErrors(page);
+  await page.goto('/social/voice-room');
+  await page.getByLabel('加入的房间名称').fill('名称回归房');
+  await page.getByRole('button', { name: '加入房间', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('未找到该房间');
+  await page.getByLabel('房间标题').fill('名称回归房');
+  await page.getByRole('button', { name: '创建并进入' }).click();
+  await expect(page.getByLabel('房主语聊房')).toBeVisible();
+  await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+  await page.getByRole('button', { name: '暂时离开' }).click();
+  // A fresh create request must not reuse the previous successful attempt identity.
+  await page.evaluate(() => sessionStorage.clear());
+  await page.getByRole('button', { name: '创建并进入' }).click();
+  await expect(page.getByRole('alert')).toContainText('该名称已被使用');
+  await page.getByRole('button', { name: '加入房间', exact: true }).click();
+  await expect(page.getByLabel('听众语聊房')).toBeVisible();
+  await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+  expect(errors()).toEqual([]);
+});
+
+
+test('房主解散直接返回入口，可同名重建且刷新不会恢复已解散房间', async ({ page }) => {
+  await withAppId(page);
+  await page.goto('/social/voice-room');
+  await page.getByLabel('房间标题').fill('解散返回验证');
+  await page.getByRole('button', { name: '创建并进入' }).click();
+  await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+  await expect(page.getByLabel('房主语聊房')).toBeVisible();
+  const oldUrl = page.url();
+  await page.getByRole('button', { name: '解散房间', exact: true }).click();
+  await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+  await expect(page.getByTestId('voice-room-ended')).toHaveCount(0);
+  await expect(page).toHaveURL(/\/social\/voice-room$/);
+  await expect(page.getByRole('complementary', { name: '时间线' })).toContainText('rtm.unsubscribe');
+  await expect(page.getByRole('complementary', { name: '时间线' })).toContainText('storage.removeChannelMetadata');
+  await page.getByRole('button', { name: '创建并进入' }).click();
+  await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+  await expect(page.getByLabel('房主语聊房')).toBeVisible();
+  expect(page.url()).not.toBe(oldUrl);
+  await page.getByRole('button', { name: '解散房间', exact: true }).click();
+  await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+  await expect(page.getByTestId('voice-room-ended')).toHaveCount(0);
+});
+
+
+test('类型筛选直接展示 API 和事件颜色，取消独立图例', async ({ page }) => {
+  await withAppId(page);
+  await page.goto('/social/voice-room');
+  await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+  await expect(page.getByTestId('timeline-legend')).toHaveCount(0);
+  const filter = page.getByTestId('filter-kind');
+  for (const kind of ['api', 'event']) {
+    const button = filter.locator(`button[data-kind="${kind}"]`);
+    const dot = button.locator('.lab-trace__dot');
+    const traceDot = page.locator(`.lab-trace > .lab-trace__dot[data-kind="${kind}"]`).first();
+    expect(await dot.evaluate(el => getComputedStyle(el).backgroundColor))
+      .toBe(await traceDot.evaluate(el => getComputedStyle(el).backgroundColor));
+    await button.click();
+    await expect(button).toHaveAttribute('aria-pressed', 'true');
+    await button.click();
+  }
 });

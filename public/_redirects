@@ -1,2 +1,0 @@
-# Cloudflare Pages：应用用 BrowserRouter，深层路由与刷新都要回落到单入口。
-/*    /index.html   200

@@ -11,22 +11,9 @@ export default defineConfig(({ mode }) => {
       }
     : undefined;
 
-  /*
-   * 隧道模式：把开发服务器挂到 Cloudflare Tunnel 之类的公网域名后面时，
-   * 浏览器带的 Host 是那个域名，而 Vite 默认只放行 localhost 一类的主机名。
-   * 由 `start-demo.sh --tunnel <域名>` 写入 `RTM_DEMO_TUNNEL_HOST`，这里只做两件事：
-   * 放行该域名，并让 HMR 客户端走 `wss://<域名>:443`（TLS 由隧道终结，本地仍是 HTTP）。
-   * 不设时行为与之前完全一致。
-   */
-  const tunnelHost = process.env.RTM_DEMO_TUNNEL_HOST?.trim() || undefined;
-
   return {
     plugins: [react()],
-    server: {
-      https,
-      allowedHosts: tunnelHost ? [tunnelHost] : undefined,
-      hmr: tunnelHost ? { host: tunnelHost, protocol: 'wss', clientPort: 443 } : undefined,
-    },
+    server: https ? { https } : undefined,
   // E2E 通过页面脚本显式注入环境，不读取开发者本机的任何 `.env*` 文件。
   // 普通 dev/build 的 envDir 保持默认值，因此 `.env.local` 仍正常生效。
   envDir: mode === 'e2e' ? false : undefined,

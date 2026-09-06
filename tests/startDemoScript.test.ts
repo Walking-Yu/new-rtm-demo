@@ -66,35 +66,6 @@ describe('start-demo.sh', () => {
     expect(gitignore).toContain('.cert/');
   });
 
-  it('serves behind a Cloudflare Tunnel hostname without local certificates', () => {
-    const script = readFileSync(resolve(process.cwd(), 'start-demo.sh'), 'utf8');
-    const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.ts'), 'utf8');
-
-    const help = spawnSync(resolve(process.cwd(), 'start-demo.sh'), ['--help'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-    });
-    expect(help.stdout).toContain('--tunnel dev.example.com');
-
-    // 域名只经一个环境变量从脚本传到 Vite；隧道终结 TLS，本地走普通 HTTP。
-    expect(script).toContain('RTM_DEMO_TUNNEL_HOST="$tunnel_host" exec npm run dev');
-    expect(viteConfig).toContain('process.env.RTM_DEMO_TUNNEL_HOST');
-    expect(viteConfig).toContain('allowedHosts: tunnelHost ? [tunnelHost] : undefined');
-    expect(viteConfig).toContain("protocol: 'wss', clientPort: 443");
-
-    // 缺主机名时拒绝启动，而不是放行所有 Host。
-    const missing = spawnSync(resolve(process.cwd(), 'start-demo.sh'), ['--tunnel'], {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-    });
-    expect(missing.status).toBe(2);
-  });
-
-  it('falls back every route to the single entry on static hosting', () => {
-    const redirects = readFileSync(resolve(process.cwd(), 'public/_redirects'), 'utf8');
-    expect(redirects).toMatch(/^\/\*\s+\/index\.html\s+200$/m);
-  });
-
   it('keeps the four default npm workflows pointed at this package', () => {
     const packageJson = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;

@@ -23,6 +23,8 @@
 
 本仓库只有**一个应用** —— 根目录 `src/` 下的 RTM 场景实验室（8 个一级分类、23 个二级场景，唯一已实现的是语聊房）。单入口 `index.html`，单份 `package.json` / `vite.config.ts` / `playwright.config.ts`，单套 e2e（`e2e/lab.spec.ts`）。
 
+`.github/workflows/ci.yml` 在推送与 PR 上跑单元测试、构建和 e2e。`package-lock.json` 必须包含所有平台的可选原生依赖，只含当前平台的 lockfile 会让 Linux 构建机上的 `npm ci` 装出不能运行的产物。
+
 `src/` 下只有四个顶层目录：`app/`（外壳）、`scenes/`（场景）、`shared/`（时间线与 RTC 脚手架）、`test/`（vitest 全局 setup）。**不要引入与 `src/` 平行的第二套应用代码或第二个入口页** —— 单入口是当前架构的前提，`tests/startDemoScript.test.ts` 断言了「不配置多入口」。
 
 ## 常用命令
@@ -164,6 +166,8 @@ Vitest + jsdom + Testing Library，测试文件以 `*.test.ts(x)` 与源码同�
 
 - `host/rtm.test.ts` / `audience/rtm.test.ts` 里的页面级 RTM port 替身——记录 `subscribe`、`publish`、Presence 和 Storage 的原子调用，用来断言业务桥接层到角色 `rtm.ts` 再到页面级 seam 的完整行为。
 - `testing.ts` 的 `createVoiceRoomFakes()`——给渲染真实场景的测试用（外壳路由、场景 UI）。场景一挂载就自动连接，不注入替身就会去连真实 RTM。它只需要「不发网络请求、能被驱动」，所以是无副作用空实现加少量开关。
+
+房间目录只保留 7 天内的记录，测试夹具里的 `createdAt` 与目录 key 必须相对当前时间生成（`directoryStorageKey(new Date(...))`），写死日期会在一周后静默失败。
 
 E2E 使用占位 App ID，**刻意不验证**真实 Agora 连通性；完整真实链路仍需用有效项目凭证人工验收。
 

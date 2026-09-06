@@ -88,14 +88,21 @@ async function waitForPlaceholderLoginToSettle(page: Page): Promise<void> {
   await expect(page.getByTestId('voice-room-entry')).toBeVisible();
 }
 
+/**
+ * 房间目录只保留 7 天内的记录，夹具必须相对当前时间生成，写死日期会在一周后静默过期。
+ * key 的日期格式与 `src/scenes/voice-room/browser-room-directory.ts` 的 `directoryStorageKey` 一致（UTC）。
+ */
+const ROOM_CREATED_AT = Date.now() - 60 * 60 * 1000;
+const ROOM_DIRECTORY_KEY = `record-channel-list-${new Date(ROOM_CREATED_AT).toISOString().slice(0, 10).replace(/-/g, '')}`;
+
 function audienceInviteData(roomId = 'voice-room-invite'): string {
   return Buffer.from(JSON.stringify({
     localStorage: {
-      'record-channel-list-20260818': {
+      [ROOM_DIRECTORY_KEY]: {
         roomId,
         roomName: '邀请房间',
-        createdAt: Date.parse('2026-08-18T01:00:00.000Z'),
-        updatedAt: Date.parse('2026-08-18T01:00:00.000Z'),
+        createdAt: ROOM_CREATED_AT,
+        updatedAt: ROOM_CREATED_AT,
         hostUserId: 'host-e2e',
         banUserIds: [],
       },
@@ -282,8 +289,12 @@ test.describe('语聊房场景', () => {
     const composer = page.getByLabel('听众语聊房').getByLabel('聊天内容').locator('..');
     await expect(composer.locator('button').last()).toHaveText('申请上麦');
     await expect(page.getByText('房间连接状态：connected')).toBeVisible();
-    await page.getByRole('button', { name: '显示连接' }).click();
-    await expect(page.getByRole('complementary', { name: '时间线' }).getByText('linkState')).toHaveCount(0);
+    // 应用级 listener 从 login 起记录 linkState，数据流默认展示连接事件：登录成功的那一条可见；
+    // 手动「隐藏连接」后不再展示。e2e 的无网络会话只在 login 时发出这一条。
+    const timeline = page.getByRole('complementary', { name: '时间线' });
+    await expect(timeline.getByText('linkState')).toHaveCount(1);
+    await page.getByRole('button', { name: '隐藏连接' }).click();
+    await expect(timeline.getByText('linkState')).toHaveCount(0);
     await page.waitForFunction(() => {
       const encoded = new URL(location.href).searchParams.get('data');
       if (!encoded) return false;

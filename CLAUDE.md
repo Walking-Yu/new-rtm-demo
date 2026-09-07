@@ -25,7 +25,7 @@
 
 `.github/workflows/ci.yml` 在推送与 PR 上跑单元测试、构建和 e2e。`package-lock.json` 必须包含所有平台的可选原生依赖，只含当前平台的 lockfile 会让 Linux 构建机上的 `npm ci` 装出不能运行的产物。
 
-`src/` 下只有四个顶层目录：`app/`（外壳）、`scenes/`（场景）、`shared/`（体验路径、时间线与 RTC 脚手架）、`test/`（vitest 全局 setup）。**不要引入与 `src/` 平行的第二套应用代码或第二个入口页** —— 单入口是当前架构的前提，`tests/startDemoScript.test.ts` 断言了「不配置多入口」。
+`src/` 下只有四个顶层目录：`app/`（外壳）、`scenes/`（场景）、`shared/`（体验路径、时间线与 RTC 脚手架）、`test/`（vitest 全局 setup）。全站只有一份样式表 `src/app/styles.css`，不要再引入第二个 CSS 文件或 CSS-in-JS。**不要引入与 `src/` 平行的第二套应用代码或第二个入口页** —— 单入口是当前架构的前提，`tests/startDemoScript.test.ts` 断言了「不配置多入口」。
 
 ## 常用命令
 
@@ -65,11 +65,13 @@ Playwright 使用独立的 `e2e` mode，`vite.config.ts` 在该 mode 下设置 `
 ## 实验室架构（`src/`）
 
 ```
-app/                     外壳：路由、一级场景导航、env 解析、身份推导、样式
+app/                     外壳：路由、一级场景导航、env 解析、身份推导、主题、样式
   experienceScenarios.ts 七个导航入口及场景体验任务的配置
   env.ts                 纯函数解析 appId：window.__ENV__ → import.meta.env → 未配置
   envSnapshot.ts          启动时读一次全局快照（唯一有副作用的那层）
   identity.ts            房间 ID 与两端 uid 推导，uid 带角色前缀
+  theme.ts               light / dark 主题偏好：本地存储 → prefers-color-scheme → light，写 <html data-theme>
+  styles.css             「墨 · Ink」设计系统的唯一样式来源（token 块 + 组件规则）
 scenes/
   registry.ts            保留原有分类与场景 ID，用于旧 URL 兼容；不直接生成顶栏
   capabilities.ts        场景能力标签（刻意不进注册表，但不丢弃）
@@ -138,9 +140,9 @@ VoiceRoomScene.tsx 场景容器
 
 **Audience 上麦申请先锁定再 publish。** 第一次点击必须在 await P2P publish 前同步设置 `waitingSeatId` 并发布 view，防止快速连点并发发送多个 `seat.request`；publish 失败时回滚等待态，成功后再启动 30 秒超时。
 
-**上麦申请只能是 USER P2P。** Audience `requestSeat()` 固定向 Host UID 使用 `channelType=USER` 发布 `seat.request`，禁止发到房间 `MESSAGE`。Host 暂时离开时，未上麦 Audience 的申请按钮禁用并通过 title 说明无法处理；业务方法同样拒绝申请。已在麦 Audience 的主动下麦按钮不受此禁用条件影响。
+**上麦申请只能是 USER P2P。** Audience `requestSeat()` 固定向 Host UID 使用 `channelType=USER` 发布 `seat.request`，禁止发到房间 `MESSAGE`。Host 暂时离开时，未上麦 Audience 的申请按钮禁用并通过 title 说明无法处理；业务方法同样拒绝申请。已在麦 Audience 的「下麦」按钮不受此禁用条件影响。
 
-**上麦 P2P 失败与麦位竞争必须显式收敛。** Audience 申请或 Host 邀请的 USER P2P publish 超时、目标不在线或失败时，在房间视图 toast“<nickname> 不在线”；申请失败同时回滚等待态。Storage 最新快照若显示申请中的麦位被其他 UID 占用，申请方清除等待态并 toast“上麦申请被拒绝”；邀请中的麦位被任意 UID 占用时，其他受邀方清除邀请并隐藏接受/拒绝入口。收到 `seat.invited` 时公屏滚到顶部展示操作，之后有新公屏消息时再滚到底部。
+**上麦 P2P 失败与麦位竞争必须显式收敛。** Audience 申请或 Host 邀请的 USER P2P publish 超时、目标不在线或失败时，在房间视图 toast“<nickname> 不在线”；申请失败同时回滚等待态。Storage 最新快照若显示申请中的麦位被其他 UID 占用，申请方清除等待态并 toast“上麦申请被拒绝”；邀请中的麦位被任意 UID 占用时，其他受邀方清除邀请并隐藏接受/拒绝入口。收到 `seat.invited` 时在房间右侧面板显示邀请卡（`SEAT nn` + 接受／拒绝），公屏位置不受影响；新公屏消息到达时公屏滚到底部。Host 邀请听众从「在线听众」列表按行点击「邀请上麦」，目标是当前选中的空麦位，选中麦位已占用时取第一个空麦位。
 
 **`subscribeRoom()` 的 Promise 只代表 SDK `subscribe()` 完成。** 它不等 Presence 或 Storage 首快照。订阅失败只回滚当前角色绑定和房间订阅，不操作页面级登录。名称房间必须额外等待 `waitUntilReady()` 与共享 active 确认，才撤销交互蒙层、推进连接体验任务并启动 RTC/Presence；目录订阅不得推进房间任务。
 
@@ -148,7 +150,7 @@ VoiceRoomScene.tsx 场景容器
 
 **一个标签页只跑一个真实客户端。** Host 与 Audience 的真实联调使用两个标签页；`RoomEntryController` 用 generation 守卫所有准入和订阅 await。两个页面都会真实播放音频，**人工验证时必须戴耳机**。
 
-**Host Presence 缺席只表示暂时离开。** active 房间的 Audience 准入不调用 `whoNow`，名称房间通过共享目录中的封禁与 status 检查后 subscribe；旧邀请保留本地检查。Presence SNAPSHOT/leave/timeout 中 Host 不在线时只把 `hostTemporarilyAway` 置为 true，Host 麦位显示“暂时离开…”，其他成员继续互动；Host 回来后清除。只有目录 inactive 或收到 `room.dissolved` 才进入结束页。
+**Host Presence 缺席只表示暂时离开。** active 房间的 Audience 准入不调用 `whoNow`，名称房间通过共享目录中的封禁与 status 检查后 subscribe；旧邀请保留本地检查。Presence SNAPSHOT/leave/timeout 中 Host 不在线时只把 `hostTemporarilyAway` 置为 true，Host 麦位状态词显示 `AWAY`（图标 title「房主暂时离开」），其他成员继续互动；Host 回来后清除。只有目录 inactive 或收到 `room.dissolved` 才进入结束页。
 
 **时间线只呈现 RTM，`rtc.ts` 不采集 trace。** 混入 RTC 节点会稀释「RTM 数据流」这条主线。RTC 的成败体现为后续那次 RTM 调用的出现或缺席，因果仍然可读。
 
@@ -201,12 +203,24 @@ Issue 与 spec 以 markdown 文件形式存放在本仓库 `docs/scratch/` 下�
 
 单上下文布局：根目录 `CONTEXT.md` + `docs/adr/`，两者均由 `/domain-modeling` 惰性创建。详见 `docs/agents/domain.md`。
 
+## 视觉与设计系统
+
+界面按「墨 · Ink」设计系统实现，设计交接包在本地 `design/rtm-experience-hall/`（`README.md` 为规范原文，`Lab.dc.html` 为主原型；来源是 Claude Design 项目「项目UI重构范围确认」）。改视觉先对照交接包，再改 `src/app/styles.css`。
+
+- **token 是唯一颜色来源。** 浅色与深色两套语义色只在 `styles.css` 顶部的 `:root` 与 `[data-theme="dark"]` 两个块里出现；组件规则一律引用 `--ink-*` 变量，不写十六进制。尺寸只实现 comfortable 一档，不建密度切换。
+- **黑白灰骨架，彩色只有三处：** 品牌渐变（左栏进度条、Console CTA 描边）、成功绿、数据流 API / EVENT 行底。数据流采用 wash 方案：API 薄荷绿（`--ink-trace-api` / `--ink-trace-api-bg`）、EVENT 天蓝（`--ink-trace-event` / `--ink-trace-event-bg`），深色底加深、点色提亮。
+- **等宽字体承担机器可读信息：** 编号、时间戳、耗时、API 名、状态词（`HOST`、`MIC ON`、`AWAY`、`CONNECTED`）、计数、TAG 用 `--ink-font-mono`；人类语言用系统 UI 字体。字重只用 500 / 600 / 700。
+- **边框恒为 1px，虚线只用于空麦位；不用投影做层级。** 唯一的 box-shadow 是选中 ring、圆点断线光圈、呼吸发光和失败描边。动效只用 1.8s 呼吸表达「说话中 / 刚到达」，其余切换不加缓动。
+- **主题切换在顶栏右侧**，`theme.ts` 负责持久化与写 `<html data-theme>`；切换无过渡动画。
+- **三栏固定宽度，不提供拖拽分隔器。** 左栏 `--ink-side-w`、右栏 `--ink-tl-w`，折叠后各收为 48px 竖排窄栏；折叠态由外壳持有。设计基准 1440，<1280 右栏优先收起，<1024 左栏也收起，≤760 展开的侧栏改为覆盖主区的抽屉。
+- **房间卡片** 列 `1fr / --ink-panel-w`，行 `--ink-hdr-h / 1fr / auto`；左列麦位 → 公告 → 公屏，底部输入条；右列 Host 治理面板（已选麦位卡、排麦申请、更新公告、在线听众）或 Audience 的邀请卡、我的状态、在线听众。麦位网格 4 列、行高 132px。
+
 ## 体验路径
 
-体验路径向左收为窄栏；手机展开时覆盖主区。只显示一级任务及状态，详细操作说明在悬浮、键盘聚焦或触屏点击时显示。子任务仅作为内部进度证据，不展示子任务列表。
+体验路径向左收为窄栏；手机展开时覆盖主区。只显示一级任务及状态，状态只有「已完成 / 待体验」两种，详细操作说明在悬浮、键盘聚焦或触屏点击时显示。子任务仅作为内部进度证据，不展示子任务列表。
 
-顶部只展示语聊房、1V1呼叫邀请、电商直播、在线课堂、虚拟世界、游戏互动、文档协同，不再展示二级导航。左侧共享体验路径包含场景任务、Console 创建项目入口和三项开发文档；没有配置 App ID 时仍可访问导航与资源。其他六个场景标明待开放，不生成完成进度。
+顶部只展示语聊房、1V1呼叫邀请、电商直播、在线课堂、虚拟世界、游戏互动、文档协同（带 01–07 等宽序号），不再展示二级导航；顶栏右侧显示页面级 RTM 连接状态与主题切换。左侧共享体验路径包含场景任务、Console 创建项目入口和三项开发文档；没有配置 App ID 时仍可访问导航与资源。其他六个场景标明待开放，不生成完成进度。
 
 语聊房任务为连接入房、成员在线、上麦协同、房内消息、房间状态同步。任务进度由成功 API trace 和已消费的业务状态驱动；失败调用、默认房主麦位、本地消息回显不能冒充远端完成证据。清空数据流或切换房间不重置本次场景体验进度；离开场景后重新进入会重置。共享组件只呈现配置和进度，不操作 SDK。
 
-入口只保留房间名称与创建／加入操作，不展示宣传标题或装饰图标。时间线类型筛选同时展示与条目一致的 API 蓝色和事件绿色，不再另设图例。
+入口按设计稿展示眉标、标题、说明与「创建 / 加入」两张卡片，只保留房间名称与创建／加入操作，不展示装饰图标或邀请链接入口。时间线类型筛选 pill 自带与条目一致的色点与计数（API 薄荷绿、事件天蓝），不再另设图例。

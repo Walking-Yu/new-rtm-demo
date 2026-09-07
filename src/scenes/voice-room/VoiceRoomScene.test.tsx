@@ -456,16 +456,16 @@ describe('语聊房单端入口', () => {
       publisher: 'audience-1',
       stateChanged: { microphoneError: 'true' },
     } as never));
-    expect(within(room).getByText('麦克风异常')).toBeInTheDocument();
+    expect(within(room).getByText('MIC ERROR')).toBeInTheDocument();
     expect(within(room).getByTitle('麦克风设备异常')).toBeInTheDocument();
 
     await userEvent.setup().click(within(composer).getByRole('button', { name: '闭麦' }));
     expect(harness.operations).toContain('presence:set::true');
     expect(harness.operations).toContain('rtc:mute:true');
-    expect(composer.lastElementChild).toHaveTextContent('主动下麦');
+    expect(composer.lastElementChild).toHaveTextContent('下麦');
   });
 
-  it('收到上麦邀请时公屏回到顶部，后续新消息到达时再滚到底部', async () => {
+  it('收到上麦邀请时右侧面板出现邀请卡，新消息到达时公屏滚到底部', async () => {
     const harness = createSceneHarness();
     render(<VoiceRoomScene
       env={env}
@@ -496,8 +496,14 @@ describe('语聊房单端入口', () => {
       }),
     } as never));
 
-    expect(await within(room).findByText('房主邀请你上 2 号麦')).toBeInTheDocument();
-    expect(feed.scrollTop).toBe(0);
+    const invitation = await within(room).findByRole('status');
+    expect(invitation).toHaveTextContent('房主邀请你上麦');
+    expect(invitation).toHaveTextContent('SEAT 02');
+    expect(within(invitation).getByRole('button', { name: '接受' })).toBeInTheDocument();
+    expect(within(invitation).getByRole('button', { name: '拒绝' })).toBeInTheDocument();
+    // 邀请卡不在公屏里，公屏位置不受影响。
+    expect(feed.scrollTop).toBe(320);
+    expect(within(feed).queryByText(/房主邀请你/)).not.toBeInTheDocument();
 
     act(() => harness.emitMessage({
       timestamp: now + 1,
@@ -520,7 +526,7 @@ describe('语聊房单端入口', () => {
     expect(feed.scrollTop).toBe(600);
   });
 
-  it('Host 用 Presence nickname 展示和选择听众，不暴露 UID', async () => {
+  it('Host 用 Presence nickname 展示听众并按行邀请上麦，不暴露 UID', async () => {
     const harness = createSceneHarness();
     const user = userEvent.setup();
     render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
@@ -559,20 +565,22 @@ describe('语聊房单端入口', () => {
           seats: { value: JSON.stringify({
             'seat-0': { seatId: 'seat-0', userId: 'audience-1', displayName: 'StorageHost' },
             'seat-1': { seatId: 'seat-1', userId: 'audience-2', displayName: 'Storage_999' },
+            'seat-2': { seatId: 'seat-2', userId: null, displayName: null },
           }) },
           forcedMutedUserIds: { value: '[]' },
         },
       },
     } as never));
 
-    await user.click(screen.getByRole('combobox', { name: '选择邀请听众' }));
+    const members = screen.getByRole('region', { name: '房间成员管理' });
+    // 麦位与在线听众都用 Presence nickname，不用 Storage displayName。
     expect(screen.getAllByText('Alice_037').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole('option', { name: 'Alice_037' })).toBeInTheDocument();
     expect(screen.queryByText('Storage_999')).not.toBeInTheDocument();
-    await user.type(screen.getByRole('combobox', { name: '选择邀请听众' }), 'Alice');
-    expect(screen.getByRole('option', { name: 'Alice_037' })).toBeInTheDocument();
     expect(screen.queryByText('audience-2')).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/UID/i)).not.toBeInTheDocument();
+    expect(within(members).getByRole('button', { name: '封禁Alice_037' })).toBeInTheDocument();
+    await user.click(within(members).getByRole('button', { name: '邀请Alice_037上麦' }));
+    await waitFor(() => expect(harness.operations).toContain('rtm:publish:USER:seat.invited'));
   });
 
   it('直达 Audience URL 在平台登录完成前不闪现 choose', () => {
@@ -628,7 +636,7 @@ describe('语聊房单端入口', () => {
       interval: null,
     } as never));
 
-    expect(within(room).getByText('暂时离开…')).toBeInTheDocument();
+    expect(within(room).getByText('AWAY')).toBeInTheDocument();
     expect(within(room).getByTitle('房主暂时离开')).toBeInTheDocument();
     expect(within(room).getByRole('button', { name: '申请上麦' })).toBeDisabled();
     expect(within(room).getByTitle('房主暂时离开，无法处理上麦申请')).toBeInTheDocument();

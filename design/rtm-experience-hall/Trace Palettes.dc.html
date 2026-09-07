@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<style>
+body{margin:0;background:#ececee;color:#111214;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Helvetica Neue",Helvetica,sans-serif;-webkit-font-smoothing:antialiased;font-size:13px}
+a{color:#111214}a:hover{color:#5f6368}
+*{box-sizing:border-box}
+</style>
+</helmet>
+<section style="display:grid;gap:28px;padding:48px">
+  <div style="display:flex;align-items:baseline;gap:16px;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#5f6368"><span style="font-size:20px;font-weight:700;color:#111214;font-family:-apple-system,'PingFang SC',sans-serif">数据流配色 · 6 组候选</span>每组：API / EVENT 两种底色 + 圆点色 · 左浅右深 · 选定后写入设计系统</div>
+  <div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start">
+    <sc-for list="{{ palettes }}" as="p" hint-placeholder-count="6">
+      <div id="{{ p.id }}" style="display:grid;gap:12px;width:880px;flex:none">
+        <div style="display:flex;align-items:center;gap:12px;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#5f6368"><span style="padding:3px 9px;border-radius:4px;background:#111214;color:#fff;font-weight:700">{{ p.id }}</span><strong style="color:#111214;font-family:-apple-system,'PingFang SC',sans-serif">{{ p.name }}</strong>{{ p.note }}</div>
+        <div style="display:grid;grid-template-columns:440px 440px;border:1px solid #d8d9dd;border-radius:10px;overflow:hidden">
+          <div style="background:#fff;padding:16px;display:grid;gap:4px;align-content:start">
+            <div style="display:flex;gap:6px;margin-bottom:8px;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px">
+              <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:1px solid #e6e7ea;border-radius:999px;color:#111214"><span style="width:8px;height:8px;border-radius:50%;background:{{ p.l.apiDot }};display:block"></span>API <span style="color:#8b8f96">5</span></span>
+              <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:1px solid #e6e7ea;border-radius:999px;color:#111214"><span style="width:8px;height:8px;border-radius:50%;background:{{ p.l.evDot }};display:block"></span>EVENT <span style="color:#8b8f96">4</span></span>
+            </div>
+            <sc-for list="{{ p.lRows }}" as="r" hint-placeholder-count="4">
+              <div style="display:grid;grid-template-columns:86px 14px minmax(0,1fr);gap:0 8px;padding:10px 12px;border-radius:6px;background:{{ r.bg }}">
+                <time style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;color:#6b7079;line-height:18px">{{ r.time }}</time>
+                <span style="display:block;width:8px;height:8px;margin:5px 3px;border-radius:50%;background:{{ r.dot }}"></span>
+                <div style="min-width:0"><div style="display:flex;align-items:baseline;gap:8px;line-height:18px;min-width:0"><span style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:12px;font-weight:600;color:{{ r.text }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">{{ r.name }}</span><sc-if value="{{ r.tag }}" hint-placeholder-val="{{ false }}"><span style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:10px;letter-spacing:.06em;color:#5f6368;padding:1px 5px;border:1px solid #d8d9dd;border-radius:3px">{{ r.tag }}</span></sc-if><sc-if value="{{ r.dur }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;color:#8b8f96">{{ r.dur }}</span></sc-if></div><div style="margin-top:2px;color:#5f6368;font-size:12px">{{ r.summary }}</div></div>
+              </div>
+            </sc-for>
+            <div style="display:flex;gap:14px;margin-top:10px;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:10px;color:#6b7079"><span>api.bg <span style="color:#111214">{{ p.l.apiBg }}</span></span><span>api.dot <span style="color:#111214">{{ p.l.apiDot }}</span></span><span>ev.bg <span style="color:#111214">{{ p.l.evBg }}</span></span><span>ev.dot <span style="color:#111214">{{ p.l.evDot }}</span></span></div>
+          </div>
+          <div style="background:#141517;padding:16px;display:grid;gap:4px;align-content:start;color:#f2f2f3">
+            <div style="display:flex;gap:6px;margin-bottom:8px;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px">
+              <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:1px solid #2a2b2f;border-radius:999px"><span style="width:8px;height:8px;border-radius:50%;background:{{ p.d.apiDot }};display:block"></span>API <span style="color:#8b8f96">5</span></span>
+              <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:1px solid #2a2b2f;border-radius:999px"><span style="width:8px;height:8px;border-radius:50%;background:{{ p.d.evDot }};display:block"></span>EVENT <span style="color:#8b8f96">4</span></span>
+            </div>
+            <sc-for list="{{ p.dRows }}" as="r" hint-placeholder-count="4">
+              <div style="display:grid;grid-template-columns:86px 14px minmax(0,1fr);gap:0 8px;padding:10px 12px;border-radius:6px;background:{{ r.bg }}">
+                <time style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;color:#a3a7ae;line-height:18px">{{ r.time }}</time>
+                <span style="display:block;width:8px;height:8px;margin:5px 3px;border-radius:50%;background:{{ r.dot }}"></span>
+                <div style="min-width:0"><div style="display:flex;align-items:baseline;gap:8px;line-height:18px;min-width:0"><span style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:12px;font-weight:600;color:{{ r.text }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">{{ r.name }}</span><sc-if value="{{ r.tag }}" hint-placeholder-val="{{ false }}"><span style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:10px;letter-spacing:.06em;color:#a3a7ae;padding:1px 5px;border:1px solid #3a3b40;border-radius:3px">{{ r.tag }}</span></sc-if><sc-if value="{{ r.dur }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;color:#8b8f96">{{ r.dur }}</span></sc-if></div><div style="margin-top:2px;color:#a3a7ae;font-size:12px">{{ r.summary }}</div></div>
+              </div>
+            </sc-for>
+            <div style="display:flex;gap:14px;margin-top:10px;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:10px;color:#8b8f96"><span>api.bg <span style="color:#f2f2f3">{{ p.d.apiBg }}</span></span><span>api.dot <span style="color:#f2f2f3">{{ p.d.apiDot }}</span></span><span>ev.bg <span style="color:#f2f2f3">{{ p.d.evBg }}</span></span><span>ev.dot <span style="color:#f2f2f3">{{ p.d.evDot }}</span></span></div>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const rows = [
+      { time: '21:05:03.618', name: 'message', tag: 'seat.request', dur: '', summary: '小鹿 申请 2 号麦位', ev: true },
+      { time: '21:05:09.045', name: 'updateChannelMetadata', tag: '', dur: '78ms', summary: 'seats.seat-1 ← 小鹿', ev: false },
+      { time: '21:05:09.131', name: 'storage', tag: 'UPDATE', dur: '', summary: 'seats 变更 · revision 4', ev: true },
+      { time: '21:05:22.480', name: 'publish', tag: '', dur: '41ms', summary: 'chat.message · "欢迎大家"', ev: false },
+    ];
+    const P = (id, name, note, l, d) => ({ id, name, note, l, d });
+    const palettes = [
+      P('P0', '薄荷 / 天蓝', 'ZenMux gradient-mint #a7e5d3 · gradient-sky #a8c8e8 · 饱和底色，圆点取同色系深一档',
+        { apiBg: '#a7e5d3', apiDot: '#2fa98a', evBg: '#a8c8e8', evDot: '#3d7fc2', evText: '#111214', evLine: '#d8d9dd' },
+        { apiBg: '#1e4a3f', apiDot: '#7fdcc3', evBg: '#1f3550', evDot: '#8ab9e6', evText: '#f2f2f3', evLine: '#3a3b40' }),
+      P('P1', '青 / 靛', 'API 冷青（调用去向服务端）· EVENT 靛（服务端回来）· 同为冷色，最统一',
+        { apiBg: '#eaf6f6', apiDot: '#0f8a7a', evBg: '#eef0fb', evDot: '#5b5bd6', evText: '#4f4fc4', evLine: '#c9c9f2' },
+        { apiBg: '#13232a', apiDot: '#3fb8a8', evBg: '#1d1d2e', evDot: '#8b8bea', evText: '#a3a3f0', evLine: '#3d3d7a' }),
+      P('P2', '琥珀 / 靛', 'API 暖琥珀 · EVENT 冷靛 · 冷暖对撞，区分度最高',
+        { apiBg: '#fbf3e6', apiDot: '#c47c12', evBg: '#eef0fb', evDot: '#5b5bd6', evText: '#4f4fc4', evLine: '#c9c9f2' },
+        { apiBg: '#2a2214', apiDot: '#e0a03a', evBg: '#1d1d2e', evDot: '#8b8bea', evText: '#a3a3f0', evLine: '#3d3d7a' }),
+      P('P3', '墨 / 靛', 'API 纯灰（我做的动作是中性的）· EVENT 靛（外部输入才有颜色）',
+        { apiBg: '#f3f4f6', apiDot: '#111214', evBg: '#eef0fb', evDot: '#5b5bd6', evText: '#4f4fc4', evLine: '#c9c9f2' },
+        { apiBg: '#1f2024', apiDot: '#f2f2f3', evBg: '#1d1d2e', evDot: '#8b8bea', evText: '#a3a3f0', evLine: '#3d3d7a' }),
+      P('P4', '蓝 / 玫红', 'API 天蓝 · EVENT 玫红 · 取自品牌渐变两端，与进度条同族',
+        { apiBg: '#e9f4fc', apiDot: '#1f8fd6', evBg: '#fdeef4', evDot: '#d6407d', evText: '#b8336a', evLine: '#f3c4d6' },
+        { apiBg: '#122230', apiDot: '#4fb3f0', evBg: '#2c1a24', evDot: '#f06a9e', evText: '#f48ab4', evLine: '#6e2f4a' }),
+      P('P5', '绿 / 紫', 'API 成功绿 · EVENT 紫罗兰 · 绿 = 调用成功，紫取自渐变中段',
+        { apiBg: '#edf7f1', apiDot: '#1f8a5b', evBg: '#f3eefc', evDot: '#8b5cf6', evText: '#7444d9', evLine: '#dcccf7' },
+        { apiBg: '#15221c', apiDot: '#3fb27f', evBg: '#221a33', evDot: '#a98af8', evText: '#bda3fa', evLine: '#4a3775' }),
+      P('P6', '石板 / 橙', 'API 石板蓝灰（克制）· EVENT 橙（唯一高亮）· 最接近终端日志的感觉',
+        { apiBg: '#eff2f6', apiDot: '#4a5b73', evBg: '#fdf0e7', evDot: '#e0641c', evText: '#bf5212', evLine: '#f5cdb3' },
+        { apiBg: '#1c2027', apiDot: '#8ea0ba', evBg: '#2c1e14', evDot: '#f08a4a', evText: '#f5a570', evLine: '#6b3d1f' }),
+    ];
+    const mk = (c, fg) => rows.map((r) => ({ ...r, bg: r.ev ? c.evBg : c.apiBg, dot: r.ev ? c.evDot : c.apiDot, text: fg }));
+    palettes.forEach((p) => { p.lRows = mk(p.l, '#111214'); p.dRows = mk(p.d, '#f2f2f3'); });
+    return { palettes };
+  }
+}
+</script>
+</body>
+</html>

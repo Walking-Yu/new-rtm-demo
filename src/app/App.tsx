@@ -1,6 +1,6 @@
-/** Persistent single-level navigation, shared experience guide, scene and RTM timeline. */
+/** 三栏外壳：顶栏（品牌、编号导航、连接状态、主题）、左栏建议体验流程、中区场景、右栏 RTM 数据流。 */
 
-import { useCallback, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom';
 
 import { EnvGuide } from './EnvGuide';
@@ -10,7 +10,9 @@ import type { ExperienceProgress } from '../shared/experience/types';
 import { ScenePlaceholder } from './ScenePlaceholder';
 import type { ResolvedEnv } from './env';
 import { SceneContextProvider, useSceneContext, type VoiceRoomOverrides } from './sceneContext';
+import { useTheme } from './theme';
 import { findCategory, findScene } from '../scenes/registry';
+import type { AppRtmLinkState } from '../scenes/voice-room/app-rtm';
 import { TimelinePanel } from '../shared/timeline/TimelinePanel';
 import type { TraceSource } from '../shared/timeline/useMergedTraces';
 import { VoiceRoomScene } from '../scenes/voice-room/VoiceRoomScene';
@@ -18,20 +20,71 @@ import { VoiceRoomScene } from '../scenes/voice-room/VoiceRoomScene';
 /** 唯一已实现的场景，兼作根路径的落点。 */
 const DEFAULT_PATH = '/social/voice-room';
 
+/** 响应式断点：设计基准 1440，<1280 右栏优先收起，<1024 左栏也收起。 */
+const RIGHT_RAIL_QUERY = '(max-width: 1279px)';
+const LEFT_RAIL_QUERY = '(max-width: 1023px)';
+
+function mediaMatches(query: string): boolean {
+  return window.matchMedia?.(query).matches ?? false;
+}
+
+/** 监听媒体查询翻转；跨过断点时收起或展开对应栏。 */
+function useMediaFlip(query: string, onFlip: (matches: boolean) => void): void {
+  useEffect(() => {
+    const media = window.matchMedia?.(query);
+    if (!media?.addEventListener) return;
+    const listener = (event: MediaQueryListEvent) => onFlip(event.matches);
+    media.addEventListener('change', listener);
+    return () => media.removeEventListener('change', listener);
+  }, [query, onFlip]);
+}
+
 /** One public entry per scenario; preserve existing URLs for invitation compatibility. */
 function PrimaryTabs({ activePath }: { activePath: string }) {
   return (
-    <header className="lab-topbar">
-      <div className="lab-logo"><span className="lab-logo__mark" aria-hidden="true" />RTM 场景实验室</div>
-      <nav className="lab-tabs lab-tabs--primary" aria-label="一级场景分类">
-        {experienceScenarios.map((scenario) => (
-          <Link key={scenario.id} to={scenario.path} className="lab-tab lab-tab--primary"
-            data-active={scenario.path === activePath} aria-current={scenario.path === activePath ? 'page' : undefined}>
-            {scenario.label}
-          </Link>
-        ))}
-      </nav>
-    </header>
+    <nav className="lab-tabs lab-tabs--primary" aria-label="一级场景分类">
+      {experienceScenarios.map((scenario, index) => (
+        <Link key={scenario.id} to={scenario.path} className="lab-tab lab-tab--primary"
+          data-active={scenario.path === activePath} aria-current={scenario.path === activePath ? 'page' : undefined}>
+          <span className="lab-tab__num" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+          {scenario.label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
+type ConnectionState = AppRtmLinkState | 'idle' | 'missing';
+
+const CONNECTION_LABELS: Record<ConnectionState, string> = {
+  missing: 'NO APP ID',
+  idle: 'IDLE',
+  disconnected: 'IDLE',
+  connecting: 'CONNECTING',
+  connected: 'CONNECTED',
+  reconnecting: 'RECONNECTING',
+  failed: 'FAILED',
+};
+
+function ConnectionStatus({ state }: { state: ConnectionState }) {
+  return (
+    <div className="lab-connection" data-state={state} data-testid="connection-state" aria-label={`RTM 连接状态：${CONNECTION_LABELS[state]}`}>
+      <span className="lab-connection__label" aria-hidden="true">RTM</span>
+      <span className="lab-connection__dot" aria-hidden="true" />
+      <span>{CONNECTION_LABELS[state]}</span>
+    </div>
+  );
+}
+
+function ThemeToggle({ theme, onToggle }: { theme: 'light' | 'dark'; onToggle: () => void }) {
+  const dark = theme === 'dark';
+  return (
+    <button type="button" className="lab-theme-toggle" onClick={onToggle}
+      title={dark ? '切换到浅色主题' : '切换到深色主题'} aria-label={dark ? '切换到浅色主题' : '切换到深色主题'} aria-pressed={dark}
+      data-testid="theme-toggle">
+      <span className="lab-theme-toggle__swatch" aria-hidden="true" />
+      {dark ? 'DARK' : 'LIGHT'}
+    </button>
   );
 }
 
@@ -42,23 +95,20 @@ function PrimaryTabs({ activePath }: { activePath: string }) {
  * 依赖变化而反复重订阅。
  */
 const NO_TRACE_SOURCES: readonly TraceSource[] = [];
-const MIN_ROOM_WIDTH = 480;
-const MIN_TIMELINE_WIDTH = 400;
-const SPLITTER_WIDTH = 18;
-const KEYBOARD_RESIZE_STEP = 24;
 
 /** Mount the real scene only when configured; the shell and resource links remain available. */
 function VoiceRoomContainer() {
-  const { env, publishTraceSources, publishExperienceProgress, voiceRoomOverrides } = useSceneContext();
+  const { env, publishTraceSources, publishExperienceProgress, publishConnectionState, voiceRoomOverrides } = useSceneContext();
   if (!env.configured) return <EnvGuide />;
   return (
-    <div data-testid="scene-voice-room">
+    <div className="lab-scene" data-testid="scene-voice-room">
       <VoiceRoomScene
         env={env}
         search={window.location.search}
         overrides={voiceRoomOverrides}
         onTraceSources={publishTraceSources}
         onExperienceProgress={publishExperienceProgress}
+        onConnectionState={publishConnectionState}
       />
     </div>
   );
@@ -112,21 +162,23 @@ interface LabShellProps {
 
 /**
  * 共享外壳。作为 layout route，`<Outlet />` 之外的部分在场景切换时保持挂载。
+ *
+ * 左右栏的折叠态都由外壳持有：折叠会改变 `.lab-workspace` 的栅格列宽，那是外壳的样式。
  */
 function LabShell({ env, voiceRoomOverrides }: LabShellProps) {
   const { categoryId = '', sceneId = '' } = useParams();
-  // 折叠态由外壳持有，不由面板自己 —— 它要改 `.lab-body` 的栅格（1fr/400px → 1fr/40px），
-  // 那是外壳的样式，面板拿不到。
   const experience = experienceForPath(`/${categoryId}/${sceneId}`);
+  const [theme, toggleTheme] = useTheme();
   const [experienceProgress, setExperienceProgress] = useState<ExperienceProgress>();
-  const [collapsed, setCollapsed] = useState(false);
-  const [timelineWidth, setTimelineWidth] = useState<number>();
-  const [resizing, setResizing] = useState(false);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ startX: number; startWidth: number } | undefined>(undefined);
+  const [leftOpen, setLeftOpen] = useState(() => !mediaMatches(LEFT_RAIL_QUERY));
+  const [rightOpen, setRightOpen] = useState(() => !mediaMatches(RIGHT_RAIL_QUERY));
+  const [connection, setConnection] = useState<AppRtmLinkState>();
   // trace 来源由场景在挂载后交上来。外壳持有它，因为时间线面板在 `<Outlet />` 之外，
   // 场景切换时保持挂载。
   const [traceSources, setTraceSources] = useState<readonly TraceSource[]>(NO_TRACE_SOURCES);
+
+  useMediaFlip(RIGHT_RAIL_QUERY, useCallback((matches: boolean) => setRightOpen(!matches), []));
+  useMediaFlip(LEFT_RAIL_QUERY, useCallback((matches: boolean) => setLeftOpen(!matches), []));
 
   // **必须是稳定引用**：场景把它放进 effect 依赖（见 `sceneContext.ts`），
   // 每次渲染换新函数会让「交出 trace 来源」的 effect 反复重跑。
@@ -136,106 +188,50 @@ function LabShell({ env, voiceRoomOverrides }: LabShellProps) {
   }, []);
 
   const sceneContext = useMemo(
-    () => ({ env, publishTraceSources, voiceRoomOverrides, publishExperienceProgress: setExperienceProgress }),
+    () => ({
+      env,
+      publishTraceSources,
+      voiceRoomOverrides,
+      publishExperienceProgress: setExperienceProgress,
+      publishConnectionState: setConnection,
+    }),
     [env, publishTraceSources, voiceRoomOverrides],
   );
 
-  const clampTimelineWidth = useCallback((nextWidth: number) => {
-    const body = bodyRef.current;
-    const bodyWidth = body?.getBoundingClientRect().width ?? 0;
-    const bodyStyle = body ? window.getComputedStyle(body) : undefined;
-    const horizontalPadding = bodyStyle
-      ? (Number.parseFloat(bodyStyle.paddingLeft) || 0) + (Number.parseFloat(bodyStyle.paddingRight) || 0)
-      : 0;
-    const contentWidth = bodyWidth - horizontalPadding;
-    const maximum = Math.max(
-      MIN_TIMELINE_WIDTH,
-      contentWidth - MIN_ROOM_WIDTH - SPLITTER_WIDTH,
-    );
-    return Math.min(maximum, Math.max(MIN_TIMELINE_WIDTH, nextWidth));
-  }, []);
-
-  const currentTimelineWidth = (separator: HTMLElement) =>
-    separator.nextElementSibling?.getBoundingClientRect().width ?? timelineWidth ?? MIN_TIMELINE_WIDTH;
+  const connectionState: ConnectionState = !env.configured ? 'missing' : connection ?? 'idle';
 
   return (
     <div className="lab-shell">
-      <PrimaryTabs activePath={`/${categoryId}/${sceneId}`} />
-      <div className="lab-workspace">
-        <ExperiencePath scenario={experience} progress={experienceProgress} />
-        <div
-          ref={bodyRef}
-          className="lab-body"
-          data-timeline={collapsed ? 'collapsed' : 'expanded'}
-          data-resizing={resizing}
-          style={timelineWidth === undefined ? undefined : {
-            '--lab-timeline-width': `${timelineWidth}px`,
-          } as CSSProperties}
-        >
-          <main className="lab-main">
-            <SceneContextProvider value={sceneContext}>
-              <Outlet />
-            </SceneContextProvider>
-          </main>
-          {!collapsed && (
-            <div
-              className="lab-splitter"
-              role="separator"
-              aria-label="调整房间与数据流宽度"
-              aria-orientation="vertical"
-              aria-valuemin={MIN_TIMELINE_WIDTH}
-              aria-valuenow={timelineWidth === undefined ? undefined : Math.round(timelineWidth)}
-              tabIndex={0}
-              onPointerDown={(event) => {
-                if (event.button !== 0) return;
-                dragRef.current = {
-                  startX: event.clientX,
-                  startWidth: currentTimelineWidth(event.currentTarget),
-                };
-                try {
-                  event.currentTarget.setPointerCapture?.(event.pointerId);
-                } catch {
-                  // 合成 PointerEvent 没有浏览器级 active pointer，拖拽状态仍可继续处理。
-                }
-                setResizing(true);
-              }}
-              onPointerMove={(event) => {
-                const drag = dragRef.current;
-                if (!drag) return;
-                setTimelineWidth(clampTimelineWidth(drag.startWidth + drag.startX - event.clientX));
-              }}
-              onPointerUp={(event) => {
-                dragRef.current = undefined;
-                if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-                  event.currentTarget.releasePointerCapture(event.pointerId);
-                }
-                setResizing(false);
-              }}
-              onPointerCancel={() => {
-                dragRef.current = undefined;
-                setResizing(false);
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-                event.preventDefault();
-                const direction = event.key === 'ArrowLeft' ? 1 : -1;
-                setTimelineWidth(clampTimelineWidth(
-                  currentTimelineWidth(event.currentTarget) + direction * KEYBOARD_RESIZE_STEP,
-                ));
-              }}
-            >
-              <span aria-hidden="true" />
-            </div>
-          )}
-          <TimelinePanel
-            sources={traceSources}
-            collapsed={collapsed}
-            onToggleCollapsed={() => setCollapsed((current) => !current)}
-          />
+      <header className="lab-topbar">
+        <div className="lab-brand">RTM<span className="lab-brand__sub">在线体验馆</span></div>
+        <PrimaryTabs activePath={`/${categoryId}/${sceneId}`} />
+        <div className="lab-topbar__side">
+          <ConnectionStatus state={connectionState} />
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </div>
+      </header>
+      <div
+        className="lab-workspace"
+        data-left={leftOpen ? 'expanded' : 'collapsed'}
+        data-timeline={rightOpen ? 'expanded' : 'collapsed'}
+      >
+        <ExperiencePath
+          scenario={experience}
+          progress={experienceProgress}
+          collapsed={!leftOpen}
+          onToggle={() => setLeftOpen((current) => !current)}
+        />
+        <main className="lab-body" data-timeline={rightOpen ? 'expanded' : 'collapsed'}>
+          <SceneContextProvider value={sceneContext}>
+            <Outlet />
+          </SceneContextProvider>
+        </main>
+        <TimelinePanel
+          sources={traceSources}
+          collapsed={!rightOpen}
+          onToggleCollapsed={() => setRightOpen((current) => !current)}
+        />
       </div>
-      {/* Reserved for additional scenario content. */}
-      <div className="lab-bottom" data-testid="bottom-reserved" />
     </div>
   );
 }

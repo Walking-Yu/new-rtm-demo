@@ -3,9 +3,9 @@
  *
  * ## 为什么需要它
  *
- * 场景容器要两样外壳持有的东西：解析好的 env（拿 appId）与「把 trace 来源交上去」
- * 的回调（时间线面板在外壳里，不在场景里）。而场景是通过注册表按 id 查出来渲染的，
- * 中间隔着路由，**没法用 props 一层层传**。
+ * 场景容器要几样外壳持有的东西：解析好的 env（拿 appId）、「把 trace 来源交上去」
+ * 的回调（时间线面板在外壳里，不在场景里）、体验进度与顶栏连接状态的上报口。
+ * 而场景是通过注册表按 id 查出来渲染的，中间隔着路由，**没法用 props 一层层传**。
  *
  * ## 为什么把测试注入口也放这里
  *
@@ -21,6 +21,7 @@ import { createContext, useContext } from 'react';
 import type { ResolvedEnv } from './env';
 import type { TraceSource } from '../shared/timeline/useMergedTraces';
 import type { ExperienceProgress } from '../shared/experience/types';
+import type { AppRtmLinkState } from '../scenes/voice-room/app-rtm';
 import type { VoiceRoomSceneProps } from '../scenes/voice-room/VoiceRoomScene';
 
 /** 场景可注入的依赖。目前只有语聊房一个已实现场景。 */
@@ -36,6 +37,8 @@ export interface SceneContextValue {
    */
   publishTraceSources?: (sources: readonly TraceSource[]) => void;
   publishExperienceProgress?: (progress: ExperienceProgress | undefined) => void;
+  /** 场景上报页面级 RTM 连接状态，顶栏据此显示 CONNECTED / RECONNECTING 等状态词。 */
+  publishConnectionState?: (state: AppRtmLinkState | undefined) => void;
   voiceRoomOverrides?: VoiceRoomOverrides;
 }
 

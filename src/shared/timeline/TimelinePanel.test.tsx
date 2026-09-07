@@ -72,12 +72,11 @@ function rowTexts(): string[] {
 }
 
 describe('两类条目与图例', () => {
-  it('新条目用淡色背景提示，并在 5 秒后恢复普通背景', () => {
+  it('新条目以记录色柔和呼吸两个周期，之后静止', () => {
     expect(stylesSource).toMatch(
-      /\.lab-trace:not\(\[data-failed="true"\]\)\s*\{[^}]*animation:\s*lab-trace-arrival 5s ease-out forwards/,
+      /\.lab-trace \{[^}]*animation: lab-rowin 0\.35s ease-out, lab-rowbreathe 1\.8s ease-in-out 0\.3s 2/,
     );
-    expect(stylesSource).toContain('@keyframes lab-trace-arrival');
-    expect(stylesSource).toMatch(/100%\s*\{\s*background-color:\s*#fff/);
+    expect(stylesSource).toContain('@keyframes lab-rowbreathe');
   });
 
   it('有新条目时自动滚到时间线底部', () => {
@@ -102,7 +101,7 @@ describe('两类条目与图例', () => {
     }
   });
 
-  it('事件按“事件、type tag、事件名、详情”展示，摘要不重复 type', () => {
+  it('事件按“事件名、type tag、详情”展示，摘要不重复 type', () => {
     const { host } = setup();
     host.record({
       name: 'presence',
@@ -113,7 +112,8 @@ describe('两类条目与图例', () => {
 
     const row = rows()[0];
     expect(row.querySelector('[data-kind="event-type"]')?.textContent).toBe('REMOTE_STATE_CHANGED');
-    expect(row.querySelector('.lab-trace__tag[data-kind="event"]')?.textContent).toBe('事件');
+    // 类型不再以文字标签重复：行底与色点已经区分 API / EVENT。
+    expect(row.querySelector('.lab-trace__tag[data-kind="event"]')).toBeNull();
     expect(row.querySelector('.lab-trace__name')?.textContent).toBe('presence');
     expect(row.querySelector('.lab-trace__summary')?.textContent).toBe('Emma_301 muted=false');
   });
@@ -123,8 +123,10 @@ describe('两类条目与图例', () => {
 
     expect(screen.queryByTestId('timeline-legend')).not.toBeInTheDocument();
     const legend = screen.getByTestId('filter-kind');
-    expect(legend.textContent).toContain('调用 RTM API');
-    expect(legend.textContent).toContain('收到 RTM 事件');
+    // 可见文案是等宽的 API / EVENT + 计数；可访问名保留完整说明。
+    expect(legend.textContent).toBe('API0EVENT0');
+    expect(within(legend).getByRole('button', { name: '调用 RTM API' })).toBeInTheDocument();
+    expect(within(legend).getByRole('button', { name: '收到 RTM 事件' })).toBeInTheDocument();
     // 图例复用 `.lab-trace__dot`，图例与条目的视觉标记不可能对不上。
     const dots = legend.querySelectorAll('.lab-trace__dot');
     expect([...dots].map((dot) => dot.getAttribute('data-kind'))).toEqual(['api', 'event']);
@@ -144,7 +146,9 @@ describe('两类条目与图例', () => {
 
     // 类型筛选器的选项就是全部出现过的 kind，恒定只有这两个。
     const options = within(screen.getByTestId('filter-kind')).getAllByRole('button');
-    expect(options.map((button) => button.textContent)).toEqual(['调用 RTM API', '收到 RTM 事件']);
+    expect(options.map((button) => button.getAttribute('aria-label'))).toEqual(['调用 RTM API', '收到 RTM 事件']);
+    // pill 上的计数跟随各类条目数。
+    expect(options.map((button) => button.textContent)).toEqual(['API1', 'EVENT1']);
   });
 
   it('默认展示 linkState 事件，可手动隐藏连接事件', async () => {
@@ -418,7 +422,7 @@ describe('清空与折叠', () => {
     const { onToggleCollapsed } = setup();
 
     const toggle = screen.getByTestId('timeline-toggle');
-    expect(toggle.textContent).toContain('折叠');
+    expect(toggle).toHaveAttribute('aria-label', '折叠数据流');
     await user.click(toggle);
 
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
@@ -476,29 +480,29 @@ describe('没有「已截断」提示', () => {
   });
 });
 
-describe('行布局照抄 spec 的三列网格', () => {
-  it('.lab-trace 为完整 HH:MM:SS.mmm 时间保留 82px 轨道', () => {
+describe('行布局照抄设计稿的三列网格', () => {
+  it('.lab-trace 为完整 HH:MM:SS.mmm 时间保留 86px 轨道，色点 14px', () => {
     const block = stylesSource.match(/\.lab-trace \{([^}]*)\}/)?.[1] ?? '';
 
     expect(block).toContain('display: grid');
-    expect(block.replace(/\s+/g, ' ')).toContain('grid-template-columns: 16px 82px minmax(0, 1fr)');
+    expect(block.replace(/\s+/g, ' ')).toContain('grid-template-columns: 86px 14px minmax(0, 1fr)');
     const time = stylesSource.match(/\.lab-trace__time \{([^}]*)\}/)?.[1] ?? '';
     expect(time).toContain('white-space: nowrap');
   });
 
-  it('每行按序渲染色点轨道、时间、正文三格', () => {
+  it('每行按序渲染时间、色点、正文三格', () => {
     const { host } = setup();
     host.record({ name: 'rtm.login', summary: 'uid=host-aaa', durationMs: 12 });
 
     const children = [...rows()[0].children];
     expect(children.map((child) => child.className)).toEqual([
-      'lab-trace__dot',
       'lab-trace__time',
+      'lab-trace__dot',
       'lab-trace__body',
     ]);
-    // 正文首行是 uid badge + 名称（+ 耗时），次行是摘要。
+    // 正文首行是名称 + uid badge（CSS 隐藏）+ 耗时，次行是摘要。
     const body = children[2];
-    expect(body.querySelector('.lab-trace__head')?.textContent).toBe('APIhost-aaartm.login12ms');
+    expect(body.querySelector('.lab-trace__head')?.textContent).toBe('rtm.loginhost-aaa12ms');
     expect(body.querySelector('.lab-trace__summary')?.textContent).toBe('uid=host-aaa');
   });
 
@@ -589,9 +593,9 @@ describe('外部 store 订阅，不轮询', () => {
     // 只有一个列表容器（不是每端一列），且顺序按时间戳。
     expect(screen.getAllByRole('list')).toHaveLength(1);
     expect(rowTexts().map((text) => text.replace(/^[\d:.]+/, '').trim())).toEqual([
-      'APIhost-aaahost-early',
-      '事件audience-bbbaudience-mid',
-      'APIhost-aaahost-late',
+      'host-earlyhost-aaa',
+      'audience-midaudience-bbb',
+      'host-latehost-aaa',
     ]);
   });
 

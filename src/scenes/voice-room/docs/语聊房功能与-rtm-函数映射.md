@@ -175,7 +175,7 @@
 
 ### [`onMemberLeft(userId)`](../event-driven-single-room-client.ts#L756)
 
-从在线 store 和 nickname 映射删除成员，生成离开系统消息。若离开者是 Host，只把 `hostTemporarilyAway` 置为 true，Host 麦位显示“暂时离开…”，成员保持订阅并继续互动；不结束 active 房间。
+从在线 store 和 nickname 映射删除成员，生成离开系统消息。若离开者是 Host，只把 `hostTemporarilyAway` 置为 true，Host 麦位状态词显示 `AWAY`（图标 title「房主暂时离开」），成员保持订阅并继续互动；不结束 active 房间。
 
 ### [`onMemberStateChanged(userId, state)`](../event-driven-single-room-client.ts#L776)
 

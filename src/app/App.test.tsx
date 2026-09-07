@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
 import { LabRoutes, sceneComponents } from './App';
 import { experienceScenarios } from './experienceScenarios';
+import { CAPABILITY_APIS } from './ScenePlaceholder';
 import { capabilitiesOf } from '../scenes/capabilities';
 import { allScenes } from '../scenes/registry';
 import { createVoiceRoomFakes } from '../scenes/voice-room/testing';
@@ -41,8 +42,9 @@ describe('实验室外壳', () => {
   it('顶部只有指定的七个一级场景，直接指向对应内容', () => {
     renderApp();
     const nav = screen.getByRole('navigation', { name: '一级场景分类' });
+    // 导航项带等宽序号 01–07，序号对读屏隐藏，可访问名仍是场景名。
     expect(within(nav).getAllByRole('link').map((link) => link.textContent)).toEqual([
-      '语聊房', '1V1呼叫邀请', '电商直播', '在线课堂', '虚拟世界', '游戏互动', '文档协同',
+      '01语聊房', '021V1呼叫邀请', '03电商直播', '04在线课堂', '05虚拟世界', '06游戏互动', '07文档协同',
     ]);
     for (const scenario of experienceScenarios) {
       expect(within(nav).getByRole('link', { name: scenario.label })).toHaveAttribute('href', scenario.path);
@@ -95,52 +97,49 @@ describe('实验室外壳', () => {
     expect(screen.getByRole('complementary', { name: '时间线' })).toBeInTheDocument();
   });
 
-  it('房间与数据流之间提供可拖拽分隔器，并支持键盘调整宽度', async () => {
+  it('左右栏都由外壳持有折叠态，折叠后工作区栅格收为窄栏', async () => {
     const user = userEvent.setup();
     const { container } = renderApp({ path: '/social/voice-room' });
-    const body = container.querySelector<HTMLElement>('.lab-body')!;
-    const timeline = screen.getByRole('complementary', { name: '时间线' });
-    const separator = screen.getByRole('separator', { name: '调整房间与数据流宽度' });
-    body.getBoundingClientRect = () => ({ width: 1200 } as DOMRect);
-    timeline.getBoundingClientRect = () => ({
-      width: Number.parseFloat(body.style.getPropertyValue('--lab-timeline-width')) || 500,
-    } as DOMRect);
+    const workspace = container.querySelector<HTMLElement>('.lab-workspace')!;
+    expect(workspace).toHaveAttribute('data-left', 'expanded');
+    expect(workspace).toHaveAttribute('data-timeline', 'expanded');
+    expect(screen.queryByRole('separator')).not.toBeInTheDocument();
 
-    await user.click(separator);
-    await user.keyboard('{ArrowLeft}');
-    expect(body.style.getPropertyValue('--lab-timeline-width')).toBe('524px');
+    await user.click(screen.getByRole('button', { name: '折叠数据流' }));
+    expect(workspace).toHaveAttribute('data-timeline', 'collapsed');
+    expect(screen.getByTestId('timeline-count')).toBeInTheDocument();
 
-    await user.keyboard('{ArrowRight}');
-    expect(body.style.getPropertyValue('--lab-timeline-width')).toBe('500px');
+    await user.click(screen.getByRole('button', { name: '体验路径' }));
+    expect(workspace).toHaveAttribute('data-left', 'collapsed');
+    expect(screen.getByRole('complementary', { name: '体验路径' })).toHaveAttribute('data-collapsed', 'true');
+
+    await user.click(screen.getByRole('button', { name: '展开数据流' }));
+    expect(workspace).toHaveAttribute('data-timeline', 'expanded');
   });
 
-  it('向左或向右拖动分隔器时同步调整两侧宽度，并受最小宽度约束', () => {
-    const { container } = renderApp({ path: '/social/voice-room' });
-    const body = container.querySelector<HTMLElement>('.lab-body')!;
-    const timeline = screen.getByRole('complementary', { name: '时间线' });
-    const separator = screen.getByRole('separator', { name: '调整房间与数据流宽度' });
-    body.getBoundingClientRect = () => ({ width: 1200 } as DOMRect);
-    timeline.getBoundingClientRect = () => ({
-      width: Number.parseFloat(body.style.getPropertyValue('--lab-timeline-width')) || 500,
-    } as DOMRect);
-
-    fireEvent.pointerDown(separator, { button: 0, pointerId: 1, clientX: 600 });
-    fireEvent.pointerMove(separator, { pointerId: 1, clientX: 550 });
-    fireEvent.pointerUp(separator, { pointerId: 1, clientX: 550 });
-    expect(body.style.getPropertyValue('--lab-timeline-width')).toBe('550px');
-
-    fireEvent.pointerDown(separator, { button: 0, pointerId: 2, clientX: 600 });
-    fireEvent.pointerMove(separator, { pointerId: 2, clientX: 2000 });
-    fireEvent.pointerUp(separator, { pointerId: 2, clientX: 2000 });
-    expect(body.style.getPropertyValue('--lab-timeline-width')).toBe('400px');
-  });
-
-  it('数据流折叠后隐藏分隔器', async () => {
+  it('顶栏提供主题切换，切换后 <html data-theme> 与按钮标签同步', async () => {
     const user = userEvent.setup();
     renderApp({ path: '/social/voice-room' });
+    const toggle = screen.getByTestId('theme-toggle');
+    expect(toggle).toHaveTextContent('LIGHT');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
 
-    await user.click(screen.getByRole('button', { name: '折叠' }));
-    expect(screen.queryByRole('separator', { name: '调整房间与数据流宽度' })).not.toBeInTheDocument();
+    await user.click(toggle);
+    expect(toggle).toHaveTextContent('DARK');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+
+    await user.click(toggle);
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+    window.localStorage.removeItem('rtm-lab.theme');
+  });
+
+  it('顶栏显示页面级 RTM 连接状态；未配置 App ID 时显示 NO APP ID', async () => {
+    renderApp({ path: '/social/voice-room' });
+    await waitFor(() => expect(screen.getByTestId('connection-state')).toHaveTextContent('CONNECTED'));
+
+    renderApp({ env: { configured: false }, path: '/social/voice-room' });
+    const states = screen.getAllByTestId('connection-state');
+    expect(states[states.length - 1]).toHaveTextContent('NO APP ID');
   });
 
   it('切换场景只替换主区内容，导航、体验路径与时间线面板不动', async () => {
@@ -230,7 +229,7 @@ describe('占位页', () => {
       const experience = experienceScenarios.find((item) => item.path.endsWith(`/${sceneId}`));
       let stripped = text.replace(experience?.label ?? scene.title, '').replace(experience?.description ?? scene.summary, '');
       for (const capability of capabilitiesOf(sceneId)) {
-        stripped = stripped.replaceAll(capability, '');
+        stripped = stripped.replaceAll(CAPABILITY_APIS[capability], '').replaceAll(capability, '');
       }
       return stripped;
     };

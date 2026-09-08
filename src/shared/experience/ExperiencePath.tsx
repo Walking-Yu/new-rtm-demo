@@ -85,7 +85,14 @@ export function ExperiencePath({ scenario, progress, collapsed, onToggle }: {
     {!collapsed && <button type="button" className="experience-path__backdrop" aria-label="收起体验路径" onClick={onToggle} />}
     <aside className="experience-path" aria-label="体验路径" data-collapsed={collapsed}>
       <div className="experience-path__head">
-        {!collapsed && <span className="experience-path__title">建议体验流程</span>}
+        {!collapsed && <span className="experience-path__title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z" />
+            <path d="M9 3v15" />
+            <path d="M15 6v15" />
+          </svg>
+          建议体验流程
+        </span>}
         <button type="button" className="ink-icon-button" aria-label="体验路径" aria-expanded={!collapsed}
           aria-controls="experience-path-content" title={collapsed ? '展开' : '折叠'} data-flipped={collapsed}
           onClick={onToggle}>

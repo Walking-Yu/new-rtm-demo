@@ -87,17 +87,16 @@ describe('两类条目与图例', () => {
     expect(body.scrollTop).toBe(480);
   });
 
-  it('api 与 event 的色点带不同的 data-kind，靠视觉标记区分', () => {
+  it('api 与 event 在首行显示类型标签，行内不再占用色点列', () => {
     const { host } = setup();
     host.record({ name: 'rtm.login', kind: 'api' });
     host.record({ name: 'message', kind: 'event' });
 
     const kinds = rows().map((row) => row.getAttribute('data-kind'));
     expect(kinds).toEqual(['api', 'event']);
-    // 每行都有一个自己的色点轨道，data-kind 与条目一致。
     for (const row of rows()) {
-      const dot = row.querySelector('.lab-trace__dot');
-      expect(dot?.getAttribute('data-kind')).toBe(row.getAttribute('data-kind'));
+      expect(row.querySelector('.lab-trace__kind')?.textContent).toBe(row.getAttribute('data-kind')?.toUpperCase());
+      expect(row.querySelector('.lab-trace__dot')).toBeNull();
     }
   });
 
@@ -112,13 +111,14 @@ describe('两类条目与图例', () => {
 
     const row = rows()[0];
     expect(row.querySelector('[data-kind="event-type"]')?.textContent).toBe('REMOTE_STATE_CHANGED');
-    // 类型不再以文字标签重复：行底与色点已经区分 API / EVENT。
+    // 类型标签与 SDK 事件子类型分开呈现。
+    expect(row.querySelector('.lab-trace__kind')?.textContent).toBe('EVENT');
     expect(row.querySelector('.lab-trace__tag[data-kind="event"]')).toBeNull();
     expect(row.querySelector('.lab-trace__name')?.textContent).toBe('presence');
     expect(row.querySelector('.lab-trace__summary')?.textContent).toBe('Emma_301 muted=false');
   });
 
-  it('类型筛选复用条目色点，不再重复显示图例', () => {
+  it('类型筛选保留色点与计数，不再重复显示图例', () => {
     setup();
 
     expect(screen.queryByTestId('timeline-legend')).not.toBeInTheDocument();
@@ -127,7 +127,7 @@ describe('两类条目与图例', () => {
     expect(legend.textContent).toBe('API0EVENT0');
     expect(within(legend).getByRole('button', { name: '调用 RTM API' })).toBeInTheDocument();
     expect(within(legend).getByRole('button', { name: '收到 RTM 事件' })).toBeInTheDocument();
-    // 图例复用 `.lab-trace__dot`，图例与条目的视觉标记不可能对不上。
+    // 类型筛选仍有各自的色点，不受记录行移除色点列影响。
     const dots = legend.querySelectorAll('.lab-trace__dot');
     expect([...dots].map((dot) => dot.getAttribute('data-kind'))).toEqual(['api', 'event']);
   });
@@ -480,29 +480,28 @@ describe('没有「已截断」提示', () => {
   });
 });
 
-describe('行布局照抄设计稿的三列网格', () => {
-  it('.lab-trace 为完整 HH:MM:SS.mmm 时间保留 86px 轨道，色点 14px', () => {
+describe('时间与正文两列，固定高度内保留完整详情', () => {
+  it('.lab-trace 为完整 HH:MM:SS.mmm 时间保留 86px 轨道', () => {
     const block = stylesSource.match(/\.lab-trace \{([^}]*)\}/)?.[1] ?? '';
 
     expect(block).toContain('display: grid');
-    expect(block.replace(/\s+/g, ' ')).toContain('grid-template-columns: 86px 14px minmax(0, 1fr)');
+    expect(block.replace(/\s+/g, ' ')).toContain('grid-template-columns: 86px minmax(0, 1fr)');
     const time = stylesSource.match(/\.lab-trace__time \{([^}]*)\}/)?.[1] ?? '';
     expect(time).toContain('white-space: nowrap');
   });
 
-  it('每行按序渲染时间、色点、正文三格', () => {
+  it('每行按序渲染时间与正文，类型标签与名称在首行', () => {
     const { host } = setup();
     host.record({ name: 'rtm.login', summary: 'uid=host-aaa', durationMs: 12 });
 
     const children = [...rows()[0].children];
     expect(children.map((child) => child.className)).toEqual([
       'lab-trace__time',
-      'lab-trace__dot',
       'lab-trace__body',
     ]);
-    // 正文首行是名称 + uid badge（CSS 隐藏）+ 耗时，次行是摘要。
-    const body = children[2];
-    expect(body.querySelector('.lab-trace__head')?.textContent).toBe('rtm.loginhost-aaa12ms');
+    // 正文首行是类型 + 名称 + uid badge（CSS 隐藏）+ 耗时，次行是摘要。
+    const body = children[1];
+    expect(body.querySelector('.lab-trace__head')?.textContent).toBe('APIrtm.loginhost-aaa12ms');
     expect(body.querySelector('.lab-trace__summary')?.textContent).toBe('uid=host-aaa');
   });
 
@@ -520,6 +519,45 @@ describe('行布局照抄设计稿的三列网格', () => {
     const error = screen.getByTestId('trace-error');
     expect(error.textContent).toContain('-14008');
     expect(error.textContent).toContain('LOCK_NOT_EXIST');
+    expect(rows()[0]).toHaveAttribute('data-failed', 'true');
+    expect(rows()[0]).toHaveAttribute('title', '-14008 LOCK_NOT_EXIST');
+    expect(error.parentElement).toHaveClass('lab-trace__summary');
+  });
+
+  it('长摘要保留原文，并通过整行悬浮提示提供全文', () => {
+    const { host } = setup();
+    const summary = '这是一条需要完整保留的长摘要。'.repeat(20);
+    host.record({ name: 'rtm.publish', summary });
+
+    expect(rows()[0]).toHaveAttribute('title', summary);
+    expect(rows()[0].querySelector('.lab-trace__summary-text')?.textContent).toBe(summary);
+  });
+
+  it('失败摘要与错误共享详情行，完整悬浮提示不会丢掉诊断信息', () => {
+    const { host } = setup();
+    const summary = '向房间发送消息。'.repeat(20);
+    const errorMessage = '请求失败：连接已中断，请检查网络后重试。'.repeat(10);
+    host.record({ name: 'rtm.publish', summary, errorCode: -10001, errorMessage });
+
+    const row = rows()[0];
+    expect(row).toHaveAttribute('title', `${summary}\n-10001 ${errorMessage}`);
+    const detail = row.querySelector('.lab-trace__summary');
+    const error = screen.getByTestId('trace-error');
+    expect(detail?.querySelector('.lab-trace__summary-text')?.textContent).toBe(summary);
+    expect(error.parentElement).toBe(detail);
+    expect(error.querySelector('code')?.textContent).toBe('-10001');
+    expect(error.querySelector('.lab-trace__error-message')?.textContent).toBe(errorMessage);
+  });
+
+  it.each([
+    { errorCode: 0, errorMessage: undefined, title: '0' },
+    { errorCode: undefined, errorMessage: 'REQUEST_FAILED', title: 'REQUEST_FAILED' },
+  ])('只有错误码或信息时仍保留详情与悬浮提示：$title', ({ errorCode, errorMessage, title }) => {
+    const { host } = setup();
+    host.record({ name: 'rtm.publish', errorCode, errorMessage });
+
+    expect(rows()[0]).toHaveAttribute('title', title);
+    expect(screen.getByTestId('trace-error').textContent).toBe(title);
     expect(rows()[0]).toHaveAttribute('data-failed', 'true');
   });
 });
@@ -593,9 +631,9 @@ describe('外部 store 订阅，不轮询', () => {
     // 只有一个列表容器（不是每端一列），且顺序按时间戳。
     expect(screen.getAllByRole('list')).toHaveLength(1);
     expect(rowTexts().map((text) => text.replace(/^[\d:.]+/, '').trim())).toEqual([
-      'host-earlyhost-aaa',
-      'audience-midaudience-bbb',
-      'host-latehost-aaa',
+      'APIhost-earlyhost-aaa',
+      'EVENTaudience-midaudience-bbb',
+      'APIhost-latehost-aaa',
     ]);
   });
 

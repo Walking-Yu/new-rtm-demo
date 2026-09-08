@@ -19,8 +19,8 @@ function fakeSdk() {
   const client = {
     on: (name: string, listener: (...args: never[]) => void) => listeners.set(name, listener),
     join: vi.fn(async () => 'host-1'),
-    leave: vi.fn(async () => undefined),
-    publish: vi.fn(async () => undefined),
+    leave: vi.fn(async (): Promise<void> => undefined),
+    publish: vi.fn(async (): Promise<void> => undefined),
     unpublish: vi.fn(async () => undefined),
     subscribe: vi.fn(async (_user: unknown, mediaType: string) =>
       mediaType === 'audio' ? remoteAudioTrack : remoteVideoTrack,
@@ -59,6 +59,13 @@ function noopHandlers(): RtcHandlers {
 }
 
 const SETTINGS = { appId: 'app-id', roomId: 'room-1', userId: 'host-1' };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
 
 describe('创建时机', () => {
   it('只有实际开音视频的用户才创建 RTC 实例 —— 纯听众不建', () => {
@@ -350,5 +357,213 @@ describe('不采集 trace', () => {
     for (const key of Object.keys(rtc)) {
       expect(key.toLowerCase()).not.toContain('trace');
     }
+  });
+});
+
+describe('异步操作与退出交错', () => {
+  it('join 失败时清理原实例，清理也失败仍保留原始 join 错误', async () => {
+    const sdk = fakeSdk();
+    const joinError = new Error('NETWORK_JOIN_FAILED');
+    sdk.client.join.mockRejectedValueOnce(joinError);
+    sdk.client.leave.mockRejectedValueOnce(new Error('NETWORK_CLEANUP_FAILED'));
+    const rtc = createRtcHelper(sdk.deps);
+
+    const failure = await rtc.join(SETTINGS).catch((error: unknown) => error);
+
+    expect(sdk.client.leave).toHaveBeenCalledOnce();
+    expect(failure).toBeInstanceOf(RtcSdkError);
+    expect((failure as RtcSdkError).cause).toBe(joinError);
+    await expect(rtc.publishMicrophone()).rejects.toBeInstanceOf(RtcUsageError);
+  });
+
+  it('旧 join 失败后的清理等待期间，新实例仍可发布且不会被清除', async () => {
+    const oldSdk = fakeSdk();
+    const newSdk = fakeSdk();
+    const pendingJoin = deferred<string>();
+    const pendingCleanup = deferred<void>();
+    const joinError = new Error('NETWORK_JOIN_FAILED');
+    oldSdk.client.join.mockReturnValueOnce(pendingJoin.promise);
+    oldSdk.client.leave.mockReturnValueOnce(pendingCleanup.promise);
+    oldSdk.createClient.mockReturnValueOnce(oldSdk.client as never).mockReturnValueOnce(newSdk.client as never);
+    const rtc = createRtcHelper(oldSdk.deps);
+    const oldJoining = rtc.join(SETTINGS).catch((error: unknown) => error);
+    await rtc.leave();
+    await rtc.join({ ...SETTINGS, roomId: 'room-2' });
+
+    pendingJoin.reject(joinError);
+    await vi.waitFor(() => expect(oldSdk.client.leave).toHaveBeenCalledOnce());
+    await rtc.publishMicrophone();
+    pendingCleanup.resolve();
+
+    expect((await oldJoining as RtcSdkError).cause).toBe(joinError);
+    expect(newSdk.client.publish).toHaveBeenCalledOnce();
+    expect(newSdk.client.leave).not.toHaveBeenCalled();
+    await rtc.leave();
+  });
+
+  it('join 等待期间退出，晚到成功关闭原实例并取消入房', async () => {
+    const sdk = fakeSdk();
+    const pending = deferred<string>();
+    sdk.client.join.mockReturnValueOnce(pending.promise);
+    const rtc = createRtcHelper(sdk.deps);
+    const joining = rtc.join(SETTINGS).catch((error: unknown) => error);
+
+    await rtc.leave();
+    pending.resolve('host-1');
+
+    expect(await joining).toBeInstanceOf(RtcUsageError);
+    expect(sdk.client.leave).toHaveBeenCalledOnce();
+    expect(sdk.client.enableAudioVolumeIndicator).not.toHaveBeenCalled();
+    await expect(rtc.publishMicrophone()).rejects.toBeInstanceOf(RtcUsageError);
+  });
+
+  it.each(['成功', '失败'])('重新 join 后，旧 join 晚到%s不清理新实例', async (outcome) => {
+    const oldSdk = fakeSdk();
+    const newSdk = fakeSdk();
+    const pending = deferred<string>();
+    oldSdk.client.join.mockReturnValueOnce(pending.promise);
+    oldSdk.createClient.mockReturnValueOnce(oldSdk.client as never).mockReturnValueOnce(newSdk.client as never);
+    const rtc = createRtcHelper(oldSdk.deps);
+    const oldJoining = rtc.join(SETTINGS).catch((error: unknown) => error);
+    await rtc.leave();
+    await rtc.join({ ...SETTINGS, roomId: 'room-2' });
+
+    if (outcome === '成功') pending.resolve('host-1');
+    else pending.reject(new Error('NETWORK_ERROR'));
+    expect(await oldJoining).toBeInstanceOf(outcome === '成功' ? RtcUsageError : RtcSdkError);
+    await rtc.publishMicrophone();
+
+    expect(newSdk.client.publish).toHaveBeenCalledOnce();
+    expect(newSdk.client.leave).not.toHaveBeenCalled();
+    expect(oldSdk.client.enableAudioVolumeIndicator).not.toHaveBeenCalled();
+    await rtc.leave();
+  });
+
+  it('等待上一实例清理时再次退出，不允许待启动的 join 复活', async () => {
+    const sdk = fakeSdk();
+    const pending = deferred<void>();
+    const rtc = createRtcHelper(sdk.deps);
+    await rtc.join(SETTINGS);
+    sdk.client.leave.mockReturnValueOnce(pending.promise);
+    const joining = rtc.join({ ...SETTINGS, roomId: 'room-2' }).catch((error: unknown) => error);
+
+    await rtc.leave();
+    pending.resolve();
+
+    expect(await joining).toBeInstanceOf(RtcUsageError);
+    expect(sdk.createClient).toHaveBeenCalledOnce();
+  });
+
+  it('重新入房后忽略旧实例的连接、媒体和音量事件', async () => {
+    const oldSdk = fakeSdk();
+    const newSdk = fakeSdk();
+    oldSdk.createClient.mockReturnValueOnce(oldSdk.client as never).mockReturnValueOnce(newSdk.client as never);
+    const rtc = createRtcHelper(oldSdk.deps);
+    const handlers = noopHandlers();
+    rtc.registerEvents(handlers);
+    await rtc.join(SETTINGS);
+    await rtc.leave();
+    await rtc.join({ ...SETTINGS, roomId: 'room-2' });
+
+    oldSdk.listeners.get('connection-state-change')?.('DISCONNECTED' as never, 'CONNECTED' as never, 'NETWORK_ERROR' as never);
+    oldSdk.listeners.get('user-published')?.({ uid: 'audience-1' } as never, 'audio' as never);
+    oldSdk.listeners.get('user-unpublished')?.({ uid: 'audience-1' } as never, 'video' as never);
+    oldSdk.listeners.get('volume-indicator')?.([{ uid: 'audience-1', level: 80 }] as never);
+
+    expect(handlers.connection).not.toHaveBeenCalled();
+    expect(oldSdk.client.subscribe).not.toHaveBeenCalled();
+    expect(handlers.remoteVideoUnpublished).not.toHaveBeenCalled();
+    expect(handlers.volume).not.toHaveBeenCalled();
+    await rtc.leave();
+  });
+
+  it.each(['audio', 'video'] as const)('退出后旧 %s subscribe 完成不再播放或交给 UI', async (mediaType) => {
+    const sdk = fakeSdk();
+    const pending = deferred<typeof sdk.remoteAudioTrack>();
+    sdk.client.subscribe.mockReturnValueOnce(pending.promise);
+    const rtc = createRtcHelper(sdk.deps);
+    const handlers = noopHandlers();
+    rtc.registerEvents(handlers);
+    await rtc.join(SETTINGS);
+    sdk.listeners.get('user-published')?.({ uid: 'audience-1' } as never, mediaType as never);
+
+    await rtc.leave();
+    pending.resolve(sdk.remoteAudioTrack);
+    await Promise.resolve();
+
+    expect(sdk.remoteAudioTrack.play).not.toHaveBeenCalled();
+    expect(handlers.remoteAudioPublished).not.toHaveBeenCalled();
+    expect(handlers.remoteVideoTrack).not.toHaveBeenCalled();
+  });
+
+  it('退出后旧 subscribe 失败不污染当前连接状态', async () => {
+    const sdk = fakeSdk();
+    const pending = deferred<typeof sdk.remoteAudioTrack>();
+    sdk.client.subscribe.mockReturnValueOnce(pending.promise);
+    const rtc = createRtcHelper(sdk.deps);
+    const handlers = noopHandlers();
+    rtc.registerEvents(handlers);
+    await rtc.join(SETTINGS);
+    sdk.listeners.get('user-published')?.({ uid: 'audience-1' } as never, 'audio' as never);
+
+    await rtc.leave();
+    pending.reject(new Error('NETWORK_ERROR'));
+    await Promise.resolve();
+
+    expect(handlers.connection).not.toHaveBeenCalled();
+  });
+
+  it.each(['麦克风', '摄像头'])('%s轨道创建期间退出，晚到轨道立即关闭且不发布', async (kind) => {
+    const sdk = fakeSdk();
+    const pending = deferred<never>();
+    const rtc = createRtcHelper(sdk.deps);
+    const track = kind === '麦克风' ? sdk.microphone : sdk.camera;
+    const create = kind === '麦克风' ? sdk.deps.createMicrophoneAudioTrack : sdk.deps.createCameraVideoTrack;
+    create.mockReturnValueOnce(pending.promise);
+    await rtc.join(SETTINGS);
+    const publishing = (kind === '麦克风' ? rtc.publishMicrophone() : rtc.publishCamera()).catch((error: unknown) => error);
+
+    await rtc.leave();
+    pending.resolve(track as never);
+
+    expect(await publishing).toBeInstanceOf(RtcUsageError);
+    expect(track.close).toHaveBeenCalledOnce();
+    expect(sdk.client.publish).not.toHaveBeenCalled();
+    expect(rtc.isMicrophoneCaptureHealthy()).toBe(false);
+    expect(rtc.getLocalVideoTrack()).toBeUndefined();
+  });
+
+  it.each(['麦克风', '摄像头'])('%s publish 期间退出，晚到成功撤销原轨道且不恢复本地状态', async (kind) => {
+    const sdk = fakeSdk();
+    const pending = deferred<void>();
+    sdk.client.publish.mockReturnValueOnce(pending.promise);
+    const rtc = createRtcHelper(sdk.deps);
+    const track = kind === '麦克风' ? sdk.microphone : sdk.camera;
+    await rtc.join(SETTINGS);
+    const publishing = (kind === '麦克风' ? rtc.publishMicrophone() : rtc.publishCamera()).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(sdk.client.publish).toHaveBeenCalledOnce());
+    await rtc.leave();
+    sdk.client.unpublish.mockClear();
+
+    pending.resolve();
+
+    expect(await publishing).toBeInstanceOf(RtcUsageError);
+    expect(sdk.client.unpublish).toHaveBeenCalledWith(track);
+    expect(track.close).toHaveBeenCalledOnce();
+    expect(rtc.isMicrophoneCaptureHealthy()).toBe(false);
+    expect(rtc.getLocalVideoTrack()).toBeUndefined();
+  });
+
+  it('退出时 unpublish 失败仍离开 SDK 频道并关闭本地轨道', async () => {
+    const sdk = fakeSdk();
+    const rtc = createRtcHelper(sdk.deps);
+    await rtc.join(SETTINGS);
+    await rtc.publishMicrophone();
+    sdk.client.unpublish.mockRejectedValueOnce(new Error('NETWORK_ERROR'));
+
+    await expect(rtc.leave()).rejects.toBeInstanceOf(RtcSdkError);
+
+    expect(sdk.client.leave).toHaveBeenCalledOnce();
+    expect(sdk.microphone.close).toHaveBeenCalledOnce();
   });
 });

@@ -5,7 +5,7 @@ import { createBrowserRoomDirectory, type StorageLike } from './browser-room-dir
 import { RoomEntryController } from './room-entry-controller';
 import { createDirectoryTestHub } from './name-directory.testing';
 import { resolveRoomName, normalizeRoomName } from './room-name';
-import { isNamedVoiceRoomPayload, createVoiceRoomUrl, parseVoiceRoomUrl, type NamedVoiceRoomUrlPayload } from './voice-room-url';
+import { isNamedVoiceRoomPayload, createVoiceRoomUrl, parseVoiceRoomUrl, type NamedVoiceRoomUrlPayload, type VoiceRoomUrlPayload } from './voice-room-url';
 import { milestonesFromTrace } from './experienceProgress';
 import { NameDirectory } from './name-directory';
 import { AudienceNameDirectoryRtm } from './audience/name-directory-rtm';
@@ -24,10 +24,12 @@ async function page(hub: ReturnType<typeof createDirectoryTestHub>, userId: stri
     setMicrophoneMuted: noop, isMicrophoneCaptureHealthy: () => true, publishCamera: noop, unpublishCamera: noop, setCameraMuted: noop, getLocalVideoTrack: () => undefined });
   const directory = createBrowserRoomDirectory(local);
   const transports: AudienceNameDirectoryRtm[] = [];
+  const replaced: VoiceRoomUrlPayload[] = [];
   const controller = new RoomEntryController({ appId: 'test-app', session, directory, createRtc,
-    directoryTimeoutMs: 300, ...options, onDirectoryTransport: transport => transports.push(transport as AudienceNameDirectoryRtm) });
+    directoryTimeoutMs: 300, ...options, replaceUrl: payload => replaced.push(payload),
+    onDirectoryTransport: transport => transports.push(transport as AudienceNameDirectoryRtm) });
   cleanups.push(async () => { await controller.leaveRoom(); await session.logout(); });
-  return { controller, session, directory, storage, rtcJoin, transports };
+  return { controller, session, directory, storage, rtcJoin, transports, replaced };
 }
 
 function invitation(controller: RoomEntryController): NamedVoiceRoomUrlPayload {
@@ -37,6 +39,82 @@ function invitation(controller: RoomEntryController): NamedVoiceRoomUrlPayload {
 }
 
 describe('共享名称房间', () => {
+  it('两角色在首次 await 前固定规范昵称，登记前 URL 和最终 client 使用同一值', async () => {
+    const hub = createDirectoryTestHub(), host = await page(hub, 'nickname-host'), audience = await page(hub, 'nickname-audience');
+    const input = { roomName: '昵称固定测试', nickname: '  Ａlice e\u0301 👩‍💻  ' };
+    const creating = host.controller.createHostRoom(input);
+    input.nickname = '迟到修改';
+    await creating;
+    expect(host.controller.getView().client!.getView()).toMatchObject({ userId: 'nickname-host', displayName: 'Ａlice é 👩‍💻' });
+    expect(host.replaced).toHaveLength(2);
+    expect(host.replaced.every(payload => payload.nickname === 'Ａlice é 👩‍💻' && payload.pageUid === 'nickname-host')).toBe(true);
+    await audience.controller.joinAudienceByName(input.roomName, '  观众 😀  ');
+    expect(audience.controller.getView().client!.getView()).toMatchObject({ userId: 'nickname-audience', displayName: '观众 😀' });
+    expect(audience.replaced.at(-1)).toMatchObject({ pageUid: 'nickname-audience', nickname: '观众 😀' });
+    const room = host.controller.getView().entry!;
+    expect(JSON.parse(hub.records.get(room.nameKey!)!.metadata.entry.value)).not.toHaveProperty('nickname');
+    expect(Object.keys(hub.records.get(room.roomId)!.metadata).sort()).toEqual(['announcement', 'forcedMutedUserIds', 'hostUserId', 'seats']);
+  });
+
+  it('非法昵称在订阅目录和登记之前失败，随后合法重试仍可成功', async () => {
+    const hub = createDirectoryTestHub(), host = await page(hub, 'invalid-nickname-host'), audience = await page(hub, 'invalid-nickname-audience');
+    for (const nickname of ['😀'.repeat(21), '不能\n换行']) {
+      await expect(host.controller.createHostRoom({ roomName: '昵称校验', nickname })).rejects.toThrow('昵称');
+      await expect(audience.controller.joinAudienceByName('昵称校验', nickname)).rejects.toThrow('昵称');
+    }
+    expect(hub.calls.filter(call => call.name === 'subscribe' || call.name === 'write' || call.name === 'presence')).toEqual([]);
+    expect(host.replaced).toEqual([]);
+    await host.controller.createHostRoom({ roomName: '昵称校验', nickname: '重试成功' });
+    expect(host.controller.getView().client!.getView().displayName).toBe('重试成功');
+  });
+
+  it('V2 两角色刷新保持自定义昵称，听众 pageUid=null 只补 UID 不换昵称', async () => {
+    const hub = createDirectoryTestHub(), host = await page(hub, 'restore-nickname-host'), audience = await page(hub, 'restore-nickname-audience');
+    await host.controller.createHostRoom({ roomName: '自定义昵称恢复', nickname: '房主小雨' });
+    const hostPayload = host.controller.getView().payload!;
+    await host.controller.leaveRoom();
+    await host.controller.restoreHostFromUrlPayload(hostPayload);
+    expect(host.controller.getView().client!.getView()).toMatchObject({ userId: 'restore-nickname-host', displayName: '房主小雨' });
+    const audiencePayload = { ...invitation(host.controller), nickname: '观众小明' };
+    await audience.controller.joinAudienceFromUrlPayload(audiencePayload);
+    const refreshed = audience.controller.getView().payload!;
+    expect(refreshed).toMatchObject({ pageUid: 'restore-nickname-audience', nickname: '观众小明' });
+    await audience.controller.leaveRoom();
+    await audience.controller.joinAudienceFromUrlPayload(refreshed);
+    expect(audience.controller.getView().client!.getView()).toMatchObject({ userId: 'restore-nickname-audience', displayName: '观众小明' });
+  });
+
+  it('creating 阶段 URL 恢复原昵称和 roomId，不重复登记', async () => {
+    const hub = createDirectoryTestHub(), host = await page(hub, 'creating-nickname-host');
+    hub.pauseRoomSnapshots(true);
+    const pending = host.controller.createHostRoom({ roomName: '创建中昵称恢复', nickname: '👩‍💻小雨' });
+    await waitFor(() => expect(host.controller.getView().phase).toBe('subscribing'));
+    const payload = host.replaced[0];
+    expect(payload).toMatchObject({ nickname: '👩‍💻小雨', pageUid: 'creating-nickname-host' });
+    await host.controller.leaveRoom();
+    await pending;
+    hub.pauseRoomSnapshots(false);
+    await host.controller.restoreHostFromUrlPayload(payload);
+    expect(host.controller.getView().entry?.roomId).toBe((payload as NamedVoiceRoomUrlPayload).roomId);
+    expect(host.controller.getView().client!.getView().displayName).toBe('👩‍💻小雨');
+    expect(host.controller.getView().payload?.nickname).toBe('👩‍💻小雨');
+    expect(hub.calls.filter(call => call.name === 'write' && call.revision === 0 && call.channel?.startsWith('vrn-v1-'))).toHaveLength(1);
+  });
+
+  it('旧 V2 nickname=null 恢复角色默认值，UID 保持', async () => {
+    const hub = createDirectoryTestHub(), host = await page(hub, 'legacy-default-host'), audience = await page(hub, 'legacy-default-audience');
+    await host.controller.createHostRoom({ roomName: '旧版昵称恢复' });
+    const hostPayload = { ...host.controller.getView().payload!, nickname: null };
+    const audiencePayload = invitation(host.controller);
+    await host.controller.leaveRoom();
+    await host.controller.restoreHostFromUrlPayload(hostPayload);
+    await audience.controller.joinAudienceFromUrlPayload(audiencePayload);
+    expect(host.controller.getView().client!.getView().displayName).toBe('Host');
+    expect(host.controller.getView().payload).toMatchObject({ pageUid: 'legacy-default-host', nickname: 'Host' });
+    expect(audience.controller.getView().client!.getView().displayName).toMatch(/^[A-Z][a-z]+_\d{3}$/u);
+    expect(audience.controller.getView().payload?.nickname).toBe(audience.controller.getView().client!.getView().displayName);
+  });
+
   it('两端不共享本地目录，仅凭规范化名称进入同一个随机房间', async () => {
     const hub = createDirectoryTestHub(), host = await page(hub, 'host'), audience = await page(hub, 'audience');
     await host.controller.createHostRoom({ roomName: '  ＲＴＭ   茶话会  ' });
@@ -145,18 +223,22 @@ describe('共享名称房间', () => {
   it('创建初始化失败可由同一请求恢复，不制造第二个实际房间', async () => {
     const hub = createDirectoryTestHub(), host = await page(hub, 'host', { directoryTimeoutMs: 20 });
     hub.pauseRoomSnapshots(true);
-    await expect(host.controller.createHostRoom({ roomName: '重试房' })).rejects.toThrow('房间准备超时');
+    await expect(host.controller.createHostRoom({ roomName: '重试房', nickname: '失败后重试' })).rejects.toThrow('房间准备超时');
     const before = JSON.parse([...hub.records.values()][0].metadata.entry.value);
     hub.pauseRoomSnapshots(false);
-    await host.controller.createHostRoom({ roomName: '重试房' });
+    await host.controller.createHostRoom({ roomName: '重试房', nickname: '失败后重试' });
     expect(host.controller.getView().entry?.roomId).toBe(before.roomId);
+    expect(host.controller.getView().client!.getView().displayName).toBe('失败后重试');
+    expect(host.controller.getView().payload?.nickname).toBe('失败后重试');
   });
 
   it('写入已成功但应答丢失，通过新快照确认归属后继续', async () => {
     const hub = createDirectoryTestHub(), host = await page(hub, 'host');
     hub.failNextWrite('after');
-    await host.controller.createHostRoom({ roomName: '未知结果恢复' });
+    await host.controller.createHostRoom({ roomName: '未知结果恢复', nickname: '应答丢失仍保留' });
     expect(host.controller.getView().phase).toBe('room');
+    expect(host.controller.getView().client!.getView().displayName).toBe('应答丢失仍保留');
+    expect(host.controller.getView().payload?.nickname).toBe('应答丢失仍保留');
     expect(hub.calls.filter(call => call.name === 'write' && call.revision === 0 && call.channel?.startsWith('vrn-v1-'))).toHaveLength(1);
   });
 

@@ -122,7 +122,7 @@ VoiceRoomScene.tsx 场景容器
 
 **消息统一封装、带 TTL、并做去重。** `rtm.ts` 创建的信封包含 `schemaVersion`、`messageId`、`roomId`、可选目标 UID、`sentAt`、`expiresAt` 和 payload。`onRtmEvent.ts` 先校验来源/目标/TTL，再按 `messageId` 去重。房内消息不自动重试；共享目录遇到未知写入结果时通过快照确认，而不重放消息。
 
-**nickname 只来自 Presence store。** 订阅成功后 `initializeMemberState(displayName)` 首次写 nickname；Host 同时写 `muted=false`，尚未上麦的 Audience 不写 `muted`。Audience RTC 发布成功后才增量写 `muted`，主动或被迫下麦后用 `presence.removeState` 删除 `muted` 与 `microphoneError`。排麦申请、接受邀请和公屏消息均不携带 nickname，接收方按 publisher UID 调用业务 store 的 `getNickNameByUid()`。麦位 UI、trace 和系统消息不得把 Storage `seat.displayName` 当作 nickname；Presence 中无 nickname 或用户已离线时，统一降级展示省略后的 UID。Host 批准排麦只写 `seats` metadata，不发 `seat.approved` P2P。封禁动作在发 `member.ban` P2P 之前必须等待入房控制器完成共享目录写入；旧房间仍更新 Local Storage `banUserIds`。
+**nickname 只来自 Presence store。** 订阅成功后 `initializeMemberState(displayName)` 首次写 nickname；本端在该写入成功且尚未离房时更新自己的昵称映射，远端仍以 Presence 事件为来源；Host 同时写 `muted=false`，尚未上麦的 Audience 不写 `muted`。Audience RTC 发布成功后才增量写 `muted`，主动或被迫下麦后用 `presence.removeState` 删除 `muted` 与 `microphoneError`。排麦申请、接受邀请和公屏消息均不携带 nickname，接收方按 publisher UID 调用业务 store 的 `getNickNameByUid()`。麦位 UI、trace 和系统消息不得把 Storage `seat.displayName` 当作 nickname；Presence 中无 nickname 或用户已离线时，统一降级展示省略后的 UID。Host 批准排麦只写 `seats` metadata，不发 `seat.approved` P2P。封禁动作在发 `member.ban` P2P 之前必须等待入房控制器完成共享目录写入；旧房间仍更新 Local Storage `banUserIds`。
 
 **可读 trace 的业务解释只做一次。** nickname 映射、麦位解析和 Presence/Storage/Message 的可读摘要由业务桥接层生成；角色 `rtm.ts` 不维护第二份 nickname store，不解析 Storage 来理解麦位。业务 store listener 返回 `summary` 和延迟执行的 `consume`；`onRtmEvent.ts` 先记录事件 trace，再调用 `consume` 并观察异步失败。角色构造参数中的只读 `describeUser` / `describeSeats` 只服务 API trace，不得在 `rtm.ts` 内复制业务状态。
 
@@ -223,4 +223,4 @@ Issue 与 spec 以 markdown 文件形式存放在本仓库 `docs/scratch/` 下�
 
 语聊房任务为连接入房、成员在线、上麦协同、房内消息、房间状态同步。任务进度由成功 API trace 和已消费的业务状态驱动；失败调用、默认房主麦位、本地消息回显不能冒充远端完成证据。清空数据流或切换房间不重置本次场景体验进度；离开场景后重新进入会重置。共享组件只呈现配置和进度，不操作 SDK。
 
-入口按设计稿展示眉标、标题、说明与「创建 / 加入」两张卡片，只保留房间名称与创建／加入操作，不展示装饰图标或邀请链接入口。时间线类型筛选 pill 自带与条目一致的色点与计数（API 薄荷绿、事件天蓝），不再另设图例。
+入口按设计稿展示眉标、标题、说明与「创建 / 加入」两张卡片，分别提供房间名称、选填昵称与创建／加入操作，不展示装饰图标或邀请链接入口。昵称支持最多 20 个 Unicode 码点，允许重名，空值沿用角色默认；UID 自动生成，创建中与入房后的有效 URL 刷新均保留 UID/昵称，昵称不参与房间名或权限判断。时间线类型筛选 pill 自带与条目一致的色点与计数（API 薄荷绿、事件天蓝），不再另设图例。

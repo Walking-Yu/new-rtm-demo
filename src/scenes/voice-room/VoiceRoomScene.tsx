@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ClipboardEvent as ReactClipboardEvent } from "react";
 import { CircleX, LockKeyhole, Radio } from "lucide-react";
 
 import type { ResolvedEnv } from "../../app/env";
@@ -14,6 +14,7 @@ import { SEAT_COUNT } from "./config";
 import { AppRtmSession, type AppRtmLinkState } from "./app-rtm";
 import { SingleRoomClient } from "./event-driven-single-room-client";
 import { normalizeRoomName } from "./room-name";
+import { getNicknameInitial, normalizeNicknameInput } from "./nickname";
 import { RoomEntryController } from "./room-entry-controller";
 import {
   createVoiceRoomUrl,
@@ -167,7 +168,7 @@ function seatCode(seatId: string): string {
 
 function CrownIcon() {
   return (
-    <svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true">
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 18h18l1-11-5.5 4L12 4l-4.5 7L2 7z" />
     </svg>
   );
@@ -265,6 +266,7 @@ function RoomSurface({
   );
   const [selectedSeatId, setSelectedSeatId] = useState("seat-1");
   const [chat, setChat] = useState("");
+  const chatEditVersion = useRef(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const [transientError, setTransientError] = useState<string>();
@@ -337,13 +339,18 @@ function RoomSurface({
     };
   }, [showEmojiPicker]);
 
+  const editChat = (value: string) => {
+    chatEditVersion.current += 1;
+    setChat(value);
+  };
+
   const insertEmoji = (emoji: string) => {
     const input = chatInputRef.current;
     const start = input?.selectionStart ?? chat.length;
     const end = input?.selectionEnd ?? start;
     const next = `${chat.slice(0, start)}${emoji}${chat.slice(end)}`;
     const caret = start + emoji.length;
-    setChat(next);
+    editChat(next);
     queueMicrotask(() => {
       input?.focus();
       input?.setSelectionRange(caret, caret);
@@ -461,12 +468,12 @@ function RoomSurface({
                 onClick={() => onSeatClick(seat)}
               >
                 {isHostSeat ? (
-                  <span className="vr-single__seat-host"><CrownIcon />房主</span>
+                  <span className="vr-single__seat-host" role="img" aria-label="房主" title="房主"><CrownIcon /></span>
                 ) : (
                   <span className="vr-single__seat-number">{seatCode(seat.seatId)}</span>
                 )}
                 <span className="vr-single__seat-avatar" aria-hidden="true">
-                  {seat.displayName?.slice(0, 1) ?? "+"}
+                  {getNicknameInitial(seat.displayName)}
                 </span>
                 <span className="vr-single__seat-copy">
                   <strong>{seat.displayName ?? "空麦位"}</strong>
@@ -489,7 +496,7 @@ function RoomSurface({
           <div><span>公屏</span><span className="vr-single__meta">{view.interactions.length} MESSAGES</span></div>
         </div>
         <section className="vr-single__chat" aria-label="互动消息">
-          <div className="vr-single__chat-feed" ref={chatFeedRef} data-testid="voice-room-chat-feed">
+          <div className="vr-single__chat-feed" ref={chatFeedRef} data-testid="voice-room-chat-feed" tabIndex={0} role="region" aria-label="公屏消息，可上下滚动">
             {view.interactions.length === 0 ? (
               <p className="vr-single__chat-empty">和大家打个招呼，开始互动吧</p>
             ) : (
@@ -523,9 +530,14 @@ function RoomSurface({
         <form
           onSubmit={(event) => {
             event.preventDefault();
+            const sentEditVersion = chatEditVersion.current;
             void client
               .sendInteraction("chat.message", chat)
-              .then(() => setChat(""));
+              .then(() => {
+                // Re-entering the same text still creates a new draft.
+                if (chatEditVersion.current === sentEditVersion) setChat("");
+              })
+              .catch((error) => setTransientError(error instanceof Error ? error.message : "聊天发送失败，请重试"));
           }}
         >
           <div className="vr-single__emoji-control" ref={emojiPickerRef}>
@@ -579,7 +591,7 @@ function RoomSurface({
             aria-label="聊天内容"
             placeholder="说点什么…"
             value={chat}
-            onChange={(event) => setChat(event.target.value)}
+            onChange={(event) => editChat(event.target.value)}
           />
           <button type="submit" className="ink-button ink-button--primary" aria-label="发送聊天" disabled={!chat.trim()}>
             发送
@@ -1200,6 +1212,10 @@ export function VoiceRoomScene({
   const [loginAttempt, setLoginAttempt] = useState(0);
   const [roomName, setRoomName] = useState("");
   const [joinName, setJoinName] = useState("");
+  const [hostNickname, setHostNickname] = useState(() => directPayload?.role === "host" ? directPayload.nickname ?? "" : "");
+  const [audienceNickname, setAudienceNickname] = useState(() => directPayload?.role === "audience" ? directPayload.nickname ?? "" : "");
+  const [hostNicknamePasteError, setHostNicknamePasteError] = useState<string>();
+  const [audienceNicknamePasteError, setAudienceNicknamePasteError] = useState<string>();
   const [cleanupFailures, setCleanupFailures] = useState<SingleRoomClient[]>([]);
   const [toast, setToast] = useState<string>();
   const directStarted = useRef(false);
@@ -1355,8 +1371,43 @@ export function VoiceRoomScene({
     try { normalizeRoomName(value); return undefined; } catch (error) { return (error as Error).message; }
   };
   const createError = nameError(roomName), joinError = nameError(joinName);
+  const nicknameError = (value: string) => {
+    try { normalizeNicknameInput(value); return undefined; } catch (error) { return (error as Error).message; }
+  };
+  const hostNicknameError = hostNicknamePasteError ?? nicknameError(hostNickname);
+  const audienceNicknameError = audienceNicknamePasteError ?? nicknameError(audienceNickname);
+  const canCreate = !pending && !!roomName.trim() && !createError && !hostNicknameError;
+  const canJoin = !pending && !!joinName.trim() && !joinError && !audienceNicknameError;
   const reportFailure = (error: unknown) => setToast(error instanceof Error ? error.message : '房间操作失败，请重试');
-  const joinByName = () => { setToast(undefined); void controller.joinAudienceByName(joinName).catch(reportFailure); };
+  const createByName = () => {
+    if (!canCreate) return;
+    setToast(undefined);
+    void controller.createHostRoom({ roomName, nickname: hostNickname }).catch(reportFailure);
+  };
+  const joinByName = () => {
+    if (!canJoin) return;
+    setToast(undefined);
+    void controller.joinAudienceByName(joinName, audienceNickname).catch(reportFailure);
+  };
+  const submitOnEnter = (event: ReactKeyboardEvent<HTMLInputElement>, submit: () => void) => {
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    event.preventDefault();
+    submit();
+  };
+  const pasteNickname = (event: ReactClipboardEvent<HTMLInputElement>, setError: (error: string | undefined) => void) => {
+    const input = event.currentTarget;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const candidate = input.value.slice(0, start) + event.clipboardData.getData('text/plain') + input.value.slice(end);
+    try {
+      // Validate before a text input strips pasted CR/LF; valid pastes remain native.
+      normalizeNicknameInput(candidate);
+      setError(undefined);
+    } catch (error) {
+      event.preventDefault();
+      setError((error as Error).message);
+    }
+  };
 
   return (
     <section className="vr-entry vr-entry--landing" data-testid="voice-room-entry">
@@ -1371,21 +1422,29 @@ export function VoiceRoomScene({
             <span className="ink-eyebrow">CREATE · HOST</span>
             <label>
               房间名称
-              <input className="ink-input" aria-label="房间标题" aria-describedby="create-name-hint" aria-invalid={!!createError} disabled={pending} value={roomName} onChange={(event) => setRoomName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && roomName.trim() && !createError && !pending) { setToast(undefined); void controller.createHostRoom({ roomName }).catch(reportFailure); } }} placeholder="例如：周五晚间语聊" />
+              <input className="ink-input" aria-label="房间标题" aria-describedby="create-name-hint" aria-invalid={!!createError} disabled={pending} value={roomName} onChange={(event) => setRoomName(event.target.value)} onKeyDown={event => submitOnEnter(event, createByName)} placeholder="例如：周五晚间语聊" />
             </label>
             <p id="create-name-hint" className={`vr-entry__hint ${createError ? 'vr-entry__hint--error' : ''}`}>{createError ?? '名称唯一，最多 32 个字符；英文不区分大小写。'}</p>
-            <button type="button" className="ink-button ink-button--primary vr-entry__primary" disabled={pending || !roomName.trim() || !!createError} onClick={() => {
-              setToast(undefined); void controller.createHostRoom({ roomName }).catch(reportFailure);
-            }}>创建并进入</button>
+            <label>
+              你的昵称（选填）
+              <input className="ink-input" aria-label="房主昵称" aria-describedby="host-nickname-hint" aria-invalid={!!hostNicknameError} disabled={pending} value={hostNickname} onChange={event => { setHostNickname(event.target.value); setHostNicknamePasteError(undefined); }} onPaste={event => pasteNickname(event, setHostNicknamePasteError)} onKeyDown={event => submitOnEnter(event, createByName)} placeholder="例如：小明" />
+            </label>
+            <p id="host-nickname-hint" className={`vr-entry__hint ${hostNicknameError ? 'vr-entry__hint--error' : ''}`}>{hostNicknameError ?? '不填使用 Host；最多 20 个字符'}</p>
+            <button type="button" className="ink-button ink-button--primary vr-entry__primary" disabled={!canCreate} onClick={createByName}>创建并进入</button>
           </section>
           <section className="vr-entry__choice-panel">
             <span className="ink-eyebrow">JOIN · AUDIENCE</span>
             <label>
               房间名称
-              <input className="ink-input" aria-label="加入的房间名称" aria-describedby="join-name-hint" aria-invalid={!!joinError} disabled={pending} value={joinName} onChange={event => setJoinName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && joinName.trim() && !joinError && !pending) joinByName(); }} placeholder="输入房主告诉你的房间名称" />
+              <input className="ink-input" aria-label="加入的房间名称" aria-describedby="join-name-hint" aria-invalid={!!joinError} disabled={pending} value={joinName} onChange={event => setJoinName(event.target.value)} onKeyDown={event => submitOnEnter(event, joinByName)} placeholder="输入房主告诉你的房间名称" />
             </label>
             <p id="join-name-hint" className={`vr-entry__hint ${joinError ? 'vr-entry__hint--error' : ''}`}>{joinError ?? '换一台设备，输入相同名称即可加入。'}</p>
-            <button type="button" className="ink-button ink-button--outline vr-entry__primary" disabled={pending || !joinName.trim() || !!joinError} onClick={joinByName}>加入房间</button>
+            <label>
+              你的昵称（选填）
+              <input className="ink-input" aria-label="观众昵称" aria-describedby="audience-nickname-hint" aria-invalid={!!audienceNicknameError} disabled={pending} value={audienceNickname} onChange={event => { setAudienceNickname(event.target.value); setAudienceNicknamePasteError(undefined); }} onPaste={event => pasteNickname(event, setAudienceNicknamePasteError)} onKeyDown={event => submitOnEnter(event, joinByName)} placeholder="例如：小雨" />
+            </label>
+            <p id="audience-nickname-hint" className={`vr-entry__hint ${audienceNicknameError ? 'vr-entry__hint--error' : ''}`}>{audienceNicknameError ?? '不填自动分配昵称；最多 20 个字符'}</p>
+            <button type="button" className="ink-button ink-button--outline vr-entry__primary" disabled={!canJoin} onClick={joinByName}>加入房间</button>
           </section>
         </div>
         {pending && <div className="vr-entry__pending" role="status"><span>{entryView.statusText}</span><button type="button" className="ink-button ink-button--small vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>取消</button></div>}

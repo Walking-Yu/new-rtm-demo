@@ -29,6 +29,7 @@ function setup(role: "host" | "audience", options: {
   holdSeatRequestPublish?: boolean;
   holdRtcJoin?: boolean;
   failUserMessageType?: string;
+  displayName?: string;
 } = {}) {
   const operations: string[] = [];
   const presenceStates: Record<string, string>[] = [];
@@ -95,7 +96,7 @@ function setup(role: "host" | "audience", options: {
     roomName: "测试房间",
     hostUserId: "host-1",
     userId: role === "host" ? "host-1" : "audience-1",
-    displayName: role === "host" ? "Host" : "Audience",
+    displayName: options.displayName ?? (role === "host" ? "Host" : "Audience"),
     role,
     session,
     createRtc: () => rtc,
@@ -105,6 +106,8 @@ function setup(role: "host" | "audience", options: {
   });
   return {
     client,
+    port,
+    rtc,
     operations,
     presenceStates,
     presenceRemovals,
@@ -152,6 +155,127 @@ describe("Presence nickname 展示", () => {
   it("Presence 没有 nickname 时只展示省略后的 UID", () => {
     expect(abbreviateUserId("audience-user-1234567890")).toBe("audie…7890");
     expect(abbreviateUserId("host-1")).toBe("host-1");
+  });
+
+  it.each(['host', 'audience'] as const)("%s 没有本端事件时仅在 Presence 成功后显示昵称，聊天信封不携带昵称", async role => {
+    const context = setup(role, { displayName: '小明 👩‍💻' });
+    const initialization = deferred();
+    const presence = vi.spyOn(context.port, 'setPresenceState').mockReturnValueOnce(initialization.promise);
+    const publish = vi.spyOn(context.port, 'publish');
+    const changed = vi.fn();
+    const unsubscribe = context.client.subscribe(changed);
+    const userId = role === 'host' ? 'host-1' : 'audience-1';
+    try {
+      const entering = context.client.enterRoom();
+      context.resolveSubscribe();
+      await entering;
+      expect(presence).toHaveBeenCalledWith('room-1', role === 'host'
+        ? { displayName: '小明 👩‍💻', muted: 'false' }
+        : { displayName: '小明 👩‍💻' });
+      context.emit('presence', {
+        timestamp: 1, channelName: 'room-1', channelType: 'MESSAGE', eventType: 'SNAPSHOT', publisher: '', interval: null,
+        snapshot: [{ userId: 'remote-user', states: { displayName: '远端昵称' }, statesCount: 1 }],
+      } as unknown as RTMEvents.PresenceEvent);
+      expect(context.client.getNickNameByUid(userId)).toBeUndefined();
+      changed.mockClear();
+      initialization.resolve();
+      await vi.waitFor(() => expect(context.client.getNickNameByUid(userId)).toBe('小明 👩‍💻'));
+      expect(changed).toHaveBeenCalled();
+      expect(context.client.getView().memberNames).toEqual({ [userId]: '小明 👩‍💻', 'remote-user': '远端昵称' });
+      expect(context.client.getView().onlineUsers).toEqual(['remote-user']);
+      await context.client.sendInteraction('chat.message', '你好');
+      const [channel, message, channelType] = publish.mock.calls.at(-1)!;
+      const envelope = JSON.parse(message);
+      expect([channel, channelType]).toEqual(['room-1', 'MESSAGE']);
+      expect(envelope.payload).toEqual({ value: '你好' });
+      expect(envelope).not.toHaveProperty('nickname');
+      expect(context.client.getView()).toMatchObject({ userId, displayName: '小明 👩‍💻' });
+    } finally { initialization.resolve(); unsubscribe(); await context.client.leaveRoom(); }
+  });
+
+  it.each(['host', 'audience'] as const)('%s 初始化 Presence 失败不会写入本端昵称', async role => {
+    const context = setup(role, { displayName: '失败时不显示' });
+    vi.spyOn(context.port, 'setPresenceState').mockRejectedValueOnce(new Error('初始化请求失败'));
+    const userId = role === 'host' ? 'host-1' : 'audience-1';
+    try {
+      const entering = context.client.enterRoom();
+      context.resolveSubscribe();
+      await entering;
+      await vi.waitFor(() => expect(context.client.getView().error).toBe('成员状态初始化失败：初始化请求失败'));
+      expect(context.client.getNickNameByUid(userId)).toBeUndefined();
+      expect(context.client.getMemberDisplayName(userId)).toBe(userId);
+    } finally { await context.client.leaveRoom(); }
+  });
+
+  it.each(['host', 'audience'] as const)('%s 离房后迟到的 Presence 成功不恢复昵称或发布视图', async role => {
+    const context = setup(role, { displayName: '迟到昵称' });
+    const initialization = deferred();
+    vi.spyOn(context.port, 'setPresenceState').mockReturnValueOnce(initialization.promise);
+    const changed = vi.fn();
+    const unsubscribe = context.client.subscribe(changed);
+    try {
+      const entering = context.client.enterRoom();
+      context.resolveSubscribe();
+      await entering;
+      await context.client.leaveRoom();
+      changed.mockClear();
+      initialization.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(context.client.getView().memberNames).toEqual({});
+      expect(context.client.getView().onlineUsers).toEqual([]);
+      expect(changed).not.toHaveBeenCalled();
+    } finally { initialization.resolve(); unsubscribe(); await context.client.leaveRoom(); }
+  });
+
+  it('同名成员的排麦和聊天保留独立 UID，邀请、强制静音及封禁只命中目标', async () => {
+    const onBanUser = vi.fn();
+    const context = setup('host', { onBanUser });
+    try {
+      const entering = context.client.enterRoom();
+      context.resolveSubscribe();
+      await entering;
+      context.emit('storage', storageEvent(1, metadata()));
+      context.emit('presence', {
+        timestamp: 1, channelName: 'room-1', channelType: 'MESSAGE', eventType: 'SNAPSHOT', publisher: '', interval: null,
+        snapshot: ['audience-2', 'audience-3'].map(userId => ({ userId, states: { displayName: '小明' }, statesCount: 1 })),
+      } as unknown as RTMEvents.PresenceEvent);
+      const sentAt = Date.now();
+      for (const [index, publisher] of ['audience-2', 'audience-3'].entries()) {
+        for (const type of ['seat.request', 'chat.message']) {
+          context.emit('message', {
+            timestamp: sentAt, channelType: type === 'seat.request' ? 'USER' : 'MESSAGE',
+            channelName: type === 'seat.request' ? 'host-1' : 'room-1', publisher,
+            topicName: '', messageType: 'STRING', customType: '',
+            message: JSON.stringify({ schemaVersion: 1, messageId: `${publisher}-${type}`, type, roomId: 'room-1',
+              ...(type === 'seat.request' ? { targetUserId: 'host-1' } : {}), sentAt, expiresAt: sentAt + 15_000,
+              payload: type === 'seat.request' ? { requestId: `request-${index}`, seatId: `seat-${index + 1}` } : { value: `消息 ${index}` } }),
+          });
+        }
+      }
+      await vi.waitFor(() => expect(context.client.getView().queue).toHaveLength(2));
+      expect(context.client.getView().queue.map(({ userId, displayName }) => ({ userId, displayName }))).toEqual([
+        { userId: 'audience-2', displayName: '小明' }, { userId: 'audience-3', displayName: '小明' },
+      ]);
+      expect(context.client.getView().interactions.filter(item => item.type === 'chat').map(({ senderId, displayName }) => ({ senderId, displayName }))).toEqual([
+        { senderId: 'audience-2', displayName: '小明' }, { senderId: 'audience-3', displayName: '小明' },
+      ]);
+      await context.client.invite('audience-2', 'seat-1');
+      expect(context.operations).toContain('rtm:publish:USER:audience-2:seat.invited');
+      await context.client.approveSeatRequest('request-1');
+      expect(context.client.getView().snapshot.seats['seat-2'].userId).toBe('audience-3');
+      expect(context.client.getView().snapshot.seats['seat-1'].userId).toBeNull();
+      await context.client.approveSeatRequest('request-0');
+      await context.client.forceMute('audience-3', true);
+      expect(context.client.getView().snapshot.forcedMutedUserIds).toEqual(['audience-3']);
+      await context.client.banMember('audience-3');
+      expect(onBanUser).toHaveBeenCalledExactlyOnceWith('audience-3');
+      expect(context.operations).toContain('rtm:publish:USER:audience-3:member.ban');
+      expect(context.operations).not.toContain('rtm:publish:USER:audience-2:member.ban');
+      expect(context.client.getView().snapshot.seats['seat-1'].userId).toBe('audience-2');
+      expect(context.client.getView().snapshot.seats['seat-2'].userId).toBeNull();
+      expect(context.client.getMemberDisplayName('audience-2')).toBe('小明');
+      expect(context.client.getMemberDisplayName('audience-3')).toBe('小明');
+    } finally { await context.client.leaveRoom(); }
   });
 });
 
@@ -1068,5 +1192,136 @@ describe("事件驱动 SingleRoomClient", () => {
       expect(context.client.getTraces().some(({ name }) => name === "rtm.unsubscribe")).toBe(true);
     });
     if (type === "room.dissolved") expect(onRoomDissolved).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("异步操作交叠回归", () => {
+  it("并发下麦在执行时读取最新麦位，第二次写入不恢复第一位成员", async () => {
+    const context = setup("host");
+    const subscribing = context.client.subscribeRoom(); context.resolveSubscribe(); await subscribing;
+    const initial = createInitialRoomSnapshot("host-1", "Host", 1);
+    initial.seats["seat-1"] = { seatId: "seat-1", userId: "a", displayName: "A" };
+    initial.seats["seat-2"] = { seatId: "seat-2", userId: "b", displayName: "B" };
+    context.emit("storage", storageEvent(1, metadata(initial)));
+    const first = deferred();
+    const writes: Parameters<AppRoomRtmPort["setRoomMetadata"]>[1][] = [];
+    context.port.setRoomMetadata = async (_roomId, data) => { writes.push(data); if (writes.length === 1) await first.promise; };
+    const a = context.client.forceLeave("a"), b = context.client.forceLeave("b");
+    try {
+      await vi.waitFor(() => expect(writes).toHaveLength(1));
+      first.resolve(); await Promise.all([a, b]);
+      const seats = JSON.parse(writes[1].find(item => item.key === "seats")!.value);
+      expect(seats["seat-1"].userId).toBeNull();
+      expect(seats["seat-2"].userId).toBeNull();
+      expect(context.client.getView().snapshot.seats).toEqual(seats);
+    } finally { first.resolve(); await Promise.allSettled([a, b]); await context.client.leaveRoom(); }
+  });
+
+  it("状态写入失败不堵塞队列，延迟成功也不覆盖期间收到的新公告", async () => {
+    const context = setup("host");
+    const subscribing = context.client.subscribeRoom(); context.resolveSubscribe(); await subscribing;
+    const initial = createInitialRoomSnapshot("host-1", "Host", 1);
+    initial.seats["seat-1"] = { seatId: "seat-1", userId: "a", displayName: "A" };
+    context.emit("storage", storageEvent(1, metadata(initial)));
+    const pending = deferred();
+    context.port.setRoomMetadata = vi.fn().mockRejectedValueOnce(new Error("写入失败"))
+      .mockImplementationOnce(async () => pending.promise).mockResolvedValue(undefined);
+    await expect(context.client.forceMute("a", true)).rejects.toThrow("写入失败");
+    const removing = context.client.forceLeave("a");
+    await vi.waitFor(() => expect(context.port.setRoomMetadata).toHaveBeenCalledTimes(2));
+    context.emit("storage", storageEvent(2, metadata({ ...initial, majorRevision: 2, announcement: "新公告" }), "UPDATE"));
+    pending.resolve(); await removing;
+    await context.client.forceMute("a", true);
+    expect(context.client.getView().snapshot.announcement).toBe("新公告");
+    expect(context.client.getView().snapshot.seats["seat-1"].userId).toBeNull();
+    expect(context.client.getView().snapshot.forcedMutedUserIds).toEqual(["a"]);
+    await context.client.leaveRoom();
+  });
+
+  it("退出后不执行队列中尚未开始的写入", async () => {
+    const context = setup("host");
+    const subscribing = context.client.subscribeRoom(); context.resolveSubscribe(); await subscribing;
+    const pending = deferred();
+    context.port.setRoomMetadata = vi.fn(async () => pending.promise);
+    const updating = context.client.updateAnnouncement("第一条");
+    await vi.waitFor(() => expect(context.port.setRoomMetadata).toHaveBeenCalledTimes(1));
+    const next = context.client.updateAnnouncement("不应写入");
+    const rejected = expect(next).rejects.toThrow("房间已结束");
+    context.rtc.leave = vi.fn(async () => {});
+    const leaving = context.client.leaveRoom();
+    await vi.waitFor(() => expect(context.rtc.leave).toHaveBeenCalledTimes(1));
+    pending.resolve();
+    await Promise.all([updating, rejected, leaving]);
+    expect(context.port.setRoomMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it("重复离房都等待同一份 RTC 与 RTM 清理", async () => {
+    const context = setup("host");
+    const subscribing = context.client.subscribeRoom(); context.resolveSubscribe(); await subscribing;
+    const pending = deferred();
+    context.rtc.leave = vi.fn(async () => pending.promise);
+    const first = context.client.leaveRoom("超时");
+    let secondCompleted = false;
+    const second = context.client.leaveRoom().then(() => { secondCompleted = true; });
+    try {
+      await vi.waitFor(() => expect(context.rtc.leave).toHaveBeenCalledTimes(1));
+      expect(secondCompleted).toBe(false);
+      expect(context.operations).not.toContain("rtm:unsubscribe:room-1");
+    } finally { pending.resolve(); await Promise.all([first, second]); }
+    expect(context.operations.filter(item => item === "rtm:unsubscribe:room-1")).toHaveLength(1);
+  });
+
+  it("发布尚未完成时撤麦会撤销迟到发布，且不重新写入媒体 Presence", async () => {
+    const context = setup("audience");
+    const publishing = deferred();
+    context.rtc.publishMicrophone = vi.fn(async () => publishing.promise);
+    context.rtc.unpublishMicrophone = vi.fn(async () => {});
+    const entering = context.client.enterRoom(); context.resolveSubscribe(); await entering;
+    const occupied = createInitialRoomSnapshot("host-1", "Host", 1);
+    occupied.seats["seat-1"] = { seatId: "seat-1", userId: "audience-1", displayName: "A" };
+    context.emit("storage", storageEvent(1, metadata(occupied)));
+    await vi.waitFor(() => expect(context.rtc.publishMicrophone).toHaveBeenCalledTimes(1));
+    context.emit("storage", storageEvent(2, metadata(createInitialRoomSnapshot("host-1", "Host", 2)), "UPDATE"));
+    publishing.resolve();
+    await vi.waitFor(() => expect(context.rtc.unpublishMicrophone).toHaveBeenCalledTimes(1));
+    expect(context.client.getView().memberMuted["audience-1"]).toBeUndefined();
+    expect(context.presenceStates.filter(state => state.muted !== undefined)).toEqual([]);
+    await context.client.leaveRoom();
+  });
+
+  it("发布等待中的多次 Storage 更新不会并发发布，静音按最新状态执行", async () => {
+    const context = setup("audience");
+    const publishing = deferred();
+    context.rtc.publishMicrophone = vi.fn(async () => publishing.promise);
+    const entering = context.client.enterRoom(); context.resolveSubscribe(); await entering;
+    const occupied = createInitialRoomSnapshot("host-1", "Host", 1);
+    occupied.seats["seat-1"] = { seatId: "seat-1", userId: "audience-1", displayName: "A" };
+    context.emit("storage", storageEvent(1, metadata(occupied)));
+    await vi.waitFor(() => expect(context.rtc.publishMicrophone).toHaveBeenCalledTimes(1));
+    context.emit("storage", storageEvent(2, metadata({ ...occupied, forcedMutedUserIds: ["audience-1"] }), "UPDATE"));
+    context.emit("storage", storageEvent(3, metadata({ ...occupied, forcedMutedUserIds: ["audience-1"], announcement: "新公告" }), "UPDATE"));
+    try { expect(context.rtc.publishMicrophone).toHaveBeenCalledTimes(1); }
+    finally { publishing.resolve(); }
+    await vi.waitFor(() => expect(context.operations).toContain("rtc:mute:true"));
+    expect(context.rtc.publishMicrophone).toHaveBeenCalledTimes(1);
+    await context.client.leaveRoom();
+  });
+
+  it("退出后迟到发布被回收且不再写入 Presence", async () => {
+    const context = setup("audience");
+    const publishing = deferred();
+    context.rtc.publishMicrophone = vi.fn(async () => publishing.promise);
+    context.rtc.unpublishMicrophone = vi.fn(async () => {});
+    const entering = context.client.enterRoom(); context.resolveSubscribe(); await entering;
+    const occupied = createInitialRoomSnapshot("host-1", "Host", 1);
+    occupied.seats["seat-1"] = { seatId: "seat-1", userId: "audience-1", displayName: "A" };
+    context.emit("storage", storageEvent(1, metadata(occupied)));
+    await vi.waitFor(() => expect(context.rtc.publishMicrophone).toHaveBeenCalledTimes(1));
+    await context.client.leaveRoom();
+    const count = context.presenceStates.length;
+    publishing.resolve();
+    await vi.waitFor(() => expect(context.rtc.unpublishMicrophone).toHaveBeenCalledTimes(1));
+    expect(context.presenceStates).toHaveLength(count);
   });
 });

@@ -122,6 +122,7 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
   let joined = false;
   let micPublished = false;
   let cameraPublished = false;
+  let generation = 0;
   /**
    * 已订阅的远端，`uid` → 已订阅的媒体种类。
    *
@@ -136,19 +137,26 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
     return client;
   }
 
-  function attachListeners(target: IAgoraRTCClient): void {
+  function isCurrent(target: IAgoraRTCClient, operationGeneration: number): boolean {
+    return client === target && generation === operationGeneration;
+  }
+
+  function attachListeners(target: IAgoraRTCClient, operationGeneration: number): void {
     target.on('connection-state-change', (currentState, _previous, reason) => {
+      if (!isCurrent(target, operationGeneration)) return;
       const failed = currentState === 'DISCONNECTED' && reason && reason !== 'LEAVE';
       handlers.connection(failed ? 'failed' : CONNECTION_STATES[currentState], reason);
     });
 
     target.on('user-published', (user, mediaType) => {
+      if (!isCurrent(target, operationGeneration)) return;
       if (mediaType === 'audio' || mediaType === 'video') {
-        void subscribe(target, user, mediaType);
+        void subscribe(target, user, mediaType, operationGeneration);
       }
     });
 
     target.on('user-unpublished', (user, mediaType) => {
+      if (!isCurrent(target, operationGeneration)) return;
       if (mediaType !== 'audio' && mediaType !== 'video') return;
       // 顺序要紧：**先**通知 UI 停播，**再**取消订阅。
       // 反过来会让 UI 在 track 已销毁之后还持有它。
@@ -157,6 +165,7 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
     });
 
     target.on('volume-indicator', (levels) => {
+      if (!isCurrent(target, operationGeneration)) return;
       handlers.volume(Object.fromEntries(levels.map((item) => [String(item.uid), item.level])));
     });
   }
@@ -201,9 +210,14 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
     target: IAgoraRTCClient,
     user: IAgoraRTCRemoteUser,
     mediaType: 'audio' | 'video',
+    operationGeneration: number,
   ): Promise<void> {
     try {
       const track = await target.subscribe(user, mediaType);
+      if (!isCurrent(target, operationGeneration)) {
+        await unsubscribeQuietly(target, user, mediaType);
+        return;
+      }
       const kinds = subscribed.get(String(user.uid)) ?? new Set<'audio' | 'video'>();
       kinds.add(mediaType);
       subscribed.set(String(user.uid), kinds);
@@ -216,7 +230,9 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
       // 视频交给 UI 自己播 —— 只有 UI 知道播到哪个节点。
       handlers.remoteVideoTrack(String(user.uid), track as IRemoteVideoTrack);
     } catch (error) {
-      handlers.connection('failed', toRtcSdkError(error).message);
+      if (isCurrent(target, operationGeneration)) {
+        handlers.connection('failed', toRtcSdkError(error).message);
+      }
     }
   }
 
@@ -226,22 +242,33 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
     },
 
     async join(settings) {
-      if (client || joined) await this.leave();
+      const cleanup = client || joined ? this.leave() : undefined;
+      const operationGeneration = ++generation;
+      if (cleanup) await cleanup;
+      if (operationGeneration !== generation) throw new RtcUsageError('RTC 加入已取消');
       const created = deps.createClient({ mode: 'rtc', codec: 'vp8' });
       client = created;
-      attachListeners(created);
+      attachListeners(created, operationGeneration);
       try {
         // 默认无 token 鉴权：SDK 边界一律传 null。
         await created.join(settings.appId, settings.roomId, null, settings.userId);
+        if (!isCurrent(created, operationGeneration)) {
+          throw new RtcUsageError('RTC 加入已取消');
+        }
         joined = true;
         created.enableAudioVolumeIndicator();
       } catch (error) {
-        client = undefined;
+        if (isCurrent(created, operationGeneration)) {
+          client = undefined;
+          joined = false;
+        }
+        try { await created.leave(); } catch { /* Preserve the original join failure or cancellation. */ }
         throw toRtcSdkError(error);
       }
     },
 
     async leave() {
+      generation += 1;
       // 离开也要先发停播通知，理由与 `user-unpublished` 相同：
       // 频道与本地轨道即将销毁，UI 必须先停止播放远端 track。
       if (joined) notifyAllStopped();
@@ -263,8 +290,11 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
       try {
         if (target && wasJoined) {
           const tracks = [localMic, localCamera].filter(Boolean);
-          if (tracks.length > 0) await target.unpublish(tracks as never);
-          await target.leave();
+          try {
+            if (tracks.length > 0) await target.unpublish(tracks as never);
+          } finally {
+            await target.leave();
+          }
         }
       } catch (error) {
         throw toRtcSdkError(error);
@@ -277,9 +307,20 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
     async publishMicrophone() {
       if (micPublished) return;
       const target = requireJoined();
+      const operationGeneration = generation;
       try {
-        microphone ??= await deps.createMicrophoneAudioTrack();
-        await target.publish(microphone);
+        const localMic = microphone ?? await deps.createMicrophoneAudioTrack();
+        if (!isCurrent(target, operationGeneration)) {
+          localMic.close();
+          throw new RtcUsageError('麦克风发布已取消');
+        }
+        microphone = localMic;
+        await target.publish(localMic);
+        if (!isCurrent(target, operationGeneration)) {
+          // leave owns the captured track's close; undo a publish that finished afterwards.
+          try { await target.unpublish(localMic); } catch { /* The old client may already have left. */ }
+          throw new RtcUsageError('麦克风发布已取消');
+        }
         micPublished = true;
       } catch (error) {
         throw toRtcSdkError(error);
@@ -288,9 +329,12 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
 
     async unpublishMicrophone() {
       if (!micPublished || !client || !microphone) return;
+      const target = client;
+      const localMic = microphone;
+      const operationGeneration = generation;
       try {
-        await client.unpublish(microphone);
-        micPublished = false;
+        await target.unpublish(localMic);
+        if (isCurrent(target, operationGeneration)) micPublished = false;
       } catch (error) {
         throw toRtcSdkError(error);
       }
@@ -318,9 +362,19 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
     async publishCamera() {
       if (cameraPublished) return;
       const target = requireJoined();
+      const operationGeneration = generation;
       try {
-        camera ??= await deps.createCameraVideoTrack();
-        await target.publish(camera);
+        const localCamera = camera ?? await deps.createCameraVideoTrack();
+        if (!isCurrent(target, operationGeneration)) {
+          localCamera.close();
+          throw new RtcUsageError('摄像头发布已取消');
+        }
+        camera = localCamera;
+        await target.publish(localCamera);
+        if (!isCurrent(target, operationGeneration)) {
+          try { await target.unpublish(localCamera); } catch { /* The old client may already have left. */ }
+          throw new RtcUsageError('摄像头发布已取消');
+        }
         cameraPublished = true;
       } catch (error) {
         throw toRtcSdkError(error);
@@ -329,9 +383,12 @@ export function createRtcHelper(deps: RtcDependencies = AgoraRTC): RtcHelper {
 
     async unpublishCamera() {
       if (!cameraPublished || !client || !camera) return;
+      const target = client;
+      const localCamera = camera;
+      const operationGeneration = generation;
       try {
-        await client.unpublish(camera);
-        cameraPublished = false;
+        await target.unpublish(localCamera);
+        if (isCurrent(target, operationGeneration)) cameraPublished = false;
       } catch (error) {
         throw toRtcSdkError(error);
       }

@@ -48,7 +48,7 @@ describe('设计 token', () => {
     }
   });
 
-  it('数据流采用 wash 方案：API 薄荷、EVENT 天蓝，深色底加深、点色提亮', () => {
+  it('数据流增量保留两套类型色板：API 薄荷、EVENT 天蓝', () => {
     const light = ruleBody(':root');
     const dark = ruleBody('[data-theme="dark"]');
     expect(light).toContain('--ink-trace-api: #2fa98a');
@@ -117,14 +117,18 @@ describe('外壳', () => {
 });
 
 describe('数据流', () => {
-  it('行是三列网格：时间 86px、色点 14px、正文自适应', () => {
-    expect(block('.lab-trace')).toContain('grid-template-columns: 86px 14px minmax(0, 1fr)');
+  it('行是两列网格：时间 86px、正文自适应，记录内采用类型标签', () => {
+    expect(block('.lab-trace')).toContain('grid-template-columns: 86px minmax(0, 1fr)');
     expect(ruleBody('.lab-trace__time')).toContain('white-space: nowrap');
+    expect(ruleBody('.lab-trace__kind')).toContain('letter-spacing: 0.1em');
   });
 
-  it('行底与色点按类型取 wash token，EVENT 行覆盖为天蓝', () => {
-    expect(ruleBody('.lab-trace')).toContain('background: var(--ink-trace-api-bg)');
-    expect(ruleBody('.lab-trace[data-kind="event"]')).toContain('background: var(--ink-trace-event-bg)');
+  it('行底使用 surface，类型由 3px 左边框与标签区分，筛选色点保留', () => {
+    expect(ruleBody('.lab-trace')).toContain('background: var(--ink-surface)');
+    expect(ruleBody('.lab-trace')).toContain('border: 1px solid var(--ink-line)');
+    expect(ruleBody('.lab-trace')).toContain('border-left: 3px solid var(--lab-trace-color)');
+    expect(ruleBody('.lab-trace[data-kind="event"]')).toContain('--lab-trace-color: var(--ink-trace-event)');
+    expect(ruleBody('.lab-trace__kind')).toContain('color: var(--lab-trace-color)');
     expect(ruleBody('.lab-trace__dot')).toContain('background: var(--ink-trace-api)');
     expect(ruleBody('.lab-trace__dot[data-kind="event"]')).toContain('background: var(--ink-trace-event)');
   });
@@ -132,9 +136,13 @@ describe('数据流', () => {
   it('新到行只用 1.8s 呼吸表达「刚发生」，两个周期后静止', () => {
     expect(ruleBody('.lab-trace')).toContain('animation: lab-rowin 0.35s ease-out, lab-rowbreathe 1.8s ease-in-out 0.3s 2');
     expect(css).toContain('@keyframes lab-rowbreathe');
+    const breathe = css.slice(css.indexOf('@keyframes lab-rowbreathe'), css.indexOf('@keyframes lab-seatbreathe'));
+    expect(breathe).toContain('border-left-color: var(--lab-trace-color)');
+    expect(breathe).toContain('box-shadow: 0 0 10px 0 color-mix(in oklab, var(--lab-trace-color) 35%, transparent)');
+    expect(breathe).not.toMatch(/background|filter:/);
   });
 
-  it('筛选 pill 是圆角 999 的胶囊，色点与条目共用同一个类名', () => {
+  it('筛选 pill 保留圆角 999 的胶囊和类型色点', () => {
     expect(ruleBody('.lab-timeline__filter')).toContain('border-radius: 999px');
     expect(ruleBody('.lab-timeline__filter .lab-trace__dot')).toContain('margin: 0');
   });
@@ -164,10 +172,12 @@ describe('语聊房', () => {
     expect(ruleBody('.vr-single__panel')).toContain('background: var(--ink-subtle)');
   });
 
-  it('不使用投影做层级：唯一的 box-shadow 是 ring、断线光圈、呼吸发光与失败描边', () => {
+  it('仅语聊房新增静态投影，保留 ring、断线光圈、呼吸发光与失败描边', () => {
+    expect(ruleBody('.vr-single')).toContain('box-shadow: var(--ink-stage-shadow)');
+    expect(css.match(/box-shadow: var\(--ink-stage-shadow\)/g)).toHaveLength(1);
     const shadows = [...css.matchAll(/box-shadow:\s*([^;]+);/g)].map((match) => match[1].trim());
     for (const shadow of shadows) {
-      expect(shadow).toMatch(/^(0 0 0 0 transparent|0 0 0 3px var\(--ink-(ring|surface)\)|0 0 12px 1px var\(--(ink-glow|lab-glow, transparent)\)|inset 0 0 0 1px var\(--ink-danger\))$/);
+      expect(shadow).toMatch(/^(0 0 0 0 transparent|0 0 0 3px var\(--ink-(ring|surface)\)|0 0 12px 1px var\(--ink-glow\)|0 0 10px 0 color-mix\(in oklab, var\(--lab-trace-color\) 35%, transparent\)|var\(--ink-stage-shadow\)|inset 0 0 0 1px var\(--ink-danger\))$/);
     }
   });
 });

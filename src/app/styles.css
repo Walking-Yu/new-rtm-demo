@@ -3,7 +3,7 @@
  *
  * 设计交接包见 design/rtm-experience-hall/（README.md 为规范原文，Lab.dc.html 为主原型）。
  * 黑白灰为骨架，等宽字体承担所有「机器可读」信息（编号、时间戳、耗时、API 名、状态词、计数、TAG），
- * 彩色只出现在三处：品牌渐变（进度条与 Console CTA 描边）、成功绿、数据流 API / EVENT 行底。
+ * 彩色只出现在三处：品牌渐变（进度条与 Console CTA 描边）、成功绿、数据流 API / EVENT 类型边框与标签。
  *
  * 颜色只在下面两个 token 块里出现一次；组件规则一律引用变量，不写十六进制。
  * 密度只实现 comfortable 一档（用户拍板），尺寸变量集中在 :root。
@@ -12,6 +12,8 @@
 :root {
   /* 灰阶与语义色 · Light */
   --ink-canvas: #fafafa;
+  --ink-grid: #ececee;
+  --ink-stage-shadow: 0 1px 2px rgba(17,18,20,.04), 0 12px 32px -8px rgba(17,18,20,.12);
   --ink-surface: #ffffff;
   --ink-subtle: #fbfbfc;
   --ink-code: #f6f7f8;
@@ -31,7 +33,7 @@
   --ink-on-ink: #ffffff;
   --ink-success: #1f8a5b;
   --ink-danger: #c8362f;
-  /* 数据流 wash 方案 · Light（Design System v1.1 定稿：API 薄荷、EVENT 天蓝） */
+  /* 数据流类型色保持 v1.1 色板；v1.2 行底统一使用 surface。 */
   --ink-trace-api: #2fa98a;
   --ink-trace-api-bg: #a7e5d3;
   --ink-trace-event: #3d7fc2;
@@ -63,6 +65,8 @@
   --ink-hdr-h: 76px;
   --ink-avatar: 44px;
   --ink-trace-p: 14px;
+  /* comfortable: 14 * 2 + 20 + 4 + round(12 * 1.5) = 70px */
+  --ink-trace-row-h: 70px;
   --ink-side-w: 252px;
   --ink-tl-w: 420px;
   --ink-panel-w: 300px;
@@ -72,6 +76,8 @@
 
 [data-theme="dark"] {
   --ink-canvas: #0f1012;
+  --ink-grid: #1a1b1e;
+  --ink-stage-shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -8px rgba(0,0,0,.6);
   --ink-surface: #141517;
   --ink-subtle: #1b1c1f;
   --ink-code: #1b1c1f;
@@ -186,11 +192,14 @@ input {
 @keyframes lab-rowbreathe {
   0%,
   100% {
+    border-color: var(--ink-line);
+    border-left-color: var(--lab-trace-color);
     box-shadow: 0 0 0 0 transparent;
   }
 
   50% {
-    box-shadow: 0 0 12px 1px var(--lab-glow, transparent);
+    border-color: var(--lab-trace-color);
+    box-shadow: 0 0 10px 0 color-mix(in oklab, var(--lab-trace-color) 35%, transparent);
   }
 }
 
@@ -531,6 +540,10 @@ input {
   min-height: 0;
   padding: var(--ink-pad);
   display: grid;
+  background-color: var(--ink-canvas);
+  background-image: linear-gradient(var(--ink-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ink-grid) 1px, transparent 1px);
+  background-size: 72px 72px;
+  background-position: -1px -1px;
 }
 
 .lab-body > * {
@@ -573,10 +586,18 @@ input {
 }
 
 .experience-path__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 700;
   font-size: var(--ink-h2);
   letter-spacing: -0.01em;
   white-space: nowrap;
+}
+
+.experience-path__title > svg,
+.lab-timeline__title > svg {
+  flex: none;
 }
 
 .experience-path__content {
@@ -840,16 +861,12 @@ input {
 }
 
 .lab-timeline__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 700;
   font-size: var(--ink-h2);
   letter-spacing: -0.01em;
-  white-space: nowrap;
-}
-
-.lab-timeline__entry-count {
-  font-family: var(--ink-font-mono);
-  font-size: 11px;
-  color: var(--ink-mono);
   white-space: nowrap;
 }
 
@@ -911,24 +928,26 @@ input {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
-  gap: 4px;
+  gap: 10px;
 }
 
 .lab-trace {
-  --lab-glow: color-mix(in srgb, var(--ink-trace-api) 20%, transparent);
+  --lab-trace-color: var(--ink-trace-api);
   display: grid;
-  grid-template-columns: 86px 14px minmax(0, 1fr);
-  gap: 0 8px;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 0 10px;
+  height: var(--ink-trace-row-h);
   padding: var(--ink-trace-p) 12px;
   border-radius: 6px;
-  background: var(--ink-trace-api-bg);
+  background: var(--ink-surface);
+  border: 1px solid var(--ink-line);
+  border-left: 3px solid var(--lab-trace-color);
   position: relative;
   animation: lab-rowin 0.35s ease-out, lab-rowbreathe 1.8s ease-in-out 0.3s 2;
 }
 
 .lab-trace[data-kind="event"] {
-  --lab-glow: color-mix(in srgb, var(--ink-trace-event) 20%, transparent);
-  background: var(--ink-trace-event-bg);
+  --lab-trace-color: var(--ink-trace-event);
 }
 
 .lab-trace[data-failed="true"] {
@@ -962,22 +981,36 @@ input {
 
 .lab-trace__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
+  height: 18px;
   line-height: 18px;
   min-width: 0;
-  flex-wrap: wrap;
+  white-space: nowrap;
+}
+
+.lab-trace__kind {
+  flex: none;
+  font-family: var(--ink-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--lab-trace-color);
 }
 
 .lab-trace__name {
+  min-width: 0;
   font-family: var(--ink-font-mono);
   font-size: 12px;
   font-weight: 600;
   color: var(--ink-fg);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .lab-trace__tag {
+  min-width: 0;
   font-family: var(--ink-font-mono);
   font-size: 10px;
   letter-spacing: 0.06em;
@@ -986,9 +1019,14 @@ input {
   border: 1px solid var(--ink-dash);
   border-radius: 3px;
   background: transparent;
+  line-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .lab-trace__duration {
+  flex: none;
   margin-left: auto;
   font-family: var(--ink-font-mono);
   font-size: 11px;
@@ -1002,23 +1040,46 @@ input {
 }
 
 .lab-trace__summary {
-  margin-top: 2px;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 4px;
   color: var(--ink-fg2);
   font-size: var(--ink-fs-sm);
   line-height: 1.5;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lab-trace__summary-text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .lab-trace__error {
-  margin-top: 4px;
+  display: inline-flex;
+  align-items: baseline;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   font-family: var(--ink-font-mono);
   font-size: 11px;
   color: var(--ink-danger);
-  word-break: break-word;
+  white-space: nowrap;
 }
 
 .lab-trace__error code {
+  flex: none;
   margin-right: 6px;
+}
+
+.lab-trace__error-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .lab-timeline__empty {
@@ -1089,6 +1150,7 @@ input {
   min-height: 0;
   min-width: 0;
   position: relative;
+  box-shadow: var(--ink-stage-shadow);
 }
 
 .vr-single__header {
@@ -1241,10 +1303,12 @@ input {
 .vr-single__seat-host {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-family: var(--ink-font-ui);
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  top: -12px;
+  left: 8px;
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--ink-surface);
+  line-height: 0;
   color: var(--ink-fg);
 }
 
@@ -1343,19 +1407,24 @@ input {
 .vr-single__chat {
   display: grid;
   min-height: 0;
+  align-content: end;
 }
 
 .vr-single__chat-feed {
   overflow: auto;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-content: end;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--ink-fs);
+  /* Five single-line messages and the four gaps; wrapped text remains scrollable. */
+  max-height: calc(7.5em + 4 * var(--ink-row-p));
   gap: var(--ink-row-p);
 }
 
 .vr-single__chat-feed > p {
   margin: 0;
+  flex: none;
+  min-height: 1.5em;
   line-height: 1.5;
   word-break: break-word;
 }
@@ -2031,6 +2100,18 @@ input {
 /* ---------- 响应式 ---------- */
 
 /* 设计基准 1440。<1280 右栏优先收起，<1024 左栏也收起（由外壳按媒体查询设置初值）。 */
+@media (min-width: 761px) {
+  .lab-workspace,
+  .lab-body {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .lab-scene > .vr-entry--landing {
+    height: 100%;
+    align-content: safe center;
+  }
+}
+
 @media (max-width: 1279px) {
   .lab-topbar {
     gap: 24px;

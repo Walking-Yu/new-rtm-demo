@@ -22,7 +22,7 @@
  *
  * ## 视觉
  *
- * 行底按类型 wash：API 薄荷、EVENT 天蓝，圆点取同色系深一档；筛选 pill 自带圆点与计数，兼作图例。
+ * 行左边框与类型标签区分 API 薄荷、EVENT 天蓝；筛选 pill 自带圆点与计数，兼作图例。
  * 颜色全部来自 `styles.css` 的 token，本文件不写颜色字面量。
  */
 
@@ -106,9 +106,13 @@ function FilterRow({
   );
 }
 
-/** 单条时间线条目。行布局是三列网格：时间 86px、色点 14px、正文自适应。 */
+/** 单条时间线条目。行布局是两列网格：时间 86px、正文自适应。 */
 function TraceRow({ entry }: { entry: TraceEntry }) {
   const failed = entry.errorCode !== undefined || entry.errorMessage !== undefined;
+  const errorDescription = [entry.errorCode, entry.errorMessage]
+    .filter((value) => value !== undefined && value !== '')
+    .join(' ');
+  const fullSummary = [entry.summary, errorDescription].filter(Boolean).join('\n');
 
   return (
     <li
@@ -117,16 +121,15 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
       data-role={entry.role}
       data-failed={failed}
       data-testid="trace-row"
+      title={fullSummary || undefined}
     >
       {/* 时间保留时分秒毫秒 —— 便于分辨紧邻的调用。 */}
       <time className="lab-trace__time">{formatTraceTime(entry.at)}</time>
 
-      {/* 色点：api 与 event 靠色点与行底区分。 */}
-      <span className="lab-trace__dot" data-kind={entry.kind} aria-hidden="true" />
-
       <div className="lab-trace__body">
         <div className="lab-trace__head">
-          <span className="lab-trace__name">{entry.name}</span>
+          <span className="lab-trace__kind">{entry.kind.toUpperCase()}</span>
+          <span className="lab-trace__name" title={entry.name}>{entry.name}</span>
           {entry.eventTag && <span className="lab-trace__tag" data-kind="event-type">{entry.eventTag}</span>}
           {/* 保留角色配色来源供现有 trace 数据兼容；UI 通过 CSS 隐藏技术 UID。 */}
           <span
@@ -145,12 +148,14 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
             <span className="lab-trace__duration">{formatDurationMs(entry.durationMs)}</span>
           )}
         </div>
-        {entry.summary && <div className="lab-trace__summary">{entry.summary}</div>}
-        {/* 失败带错误码与错误信息 —— 出错时才知道该查什么。 */}
-        {failed && (
-          <div className="lab-trace__error" data-testid="trace-error">
-            {entry.errorCode !== undefined && <code>{entry.errorCode}</code>}
-            {entry.errorMessage}
+        {(entry.summary || failed) && (
+          <div className="lab-trace__summary">
+            {entry.summary && <span className="lab-trace__summary-text">{entry.summary}</span>}
+            {/* 失败信息与摘要共享详情行，悬浮保留完整诊断内容。 */}
+            {failed && <span className="lab-trace__error" data-testid="trace-error">
+              {entry.errorCode !== undefined && <code>{entry.errorCode}</code>}
+              {entry.errorMessage && <span className="lab-trace__error-message">{entry.errorMessage}</span>}
+            </span>}
           </div>
         )}
       </div>
@@ -179,7 +184,6 @@ export function TimelinePanel({
     const api = entries.filter((entry) => entry.kind === 'api').length;
     return { api, event: entries.length - api };
   }, [entries]);
-  const countLabel = entries.length === 0 ? '0 records' : `${counts.api} API · ${counts.event} EVENT`;
 
   // 新的 RTM 调用或事件进入时，始终把时间线定位到最新一项。
   useLayoutEffect(() => {
@@ -231,8 +235,12 @@ export function TimelinePanel({
     <aside className="lab-timeline" aria-label="时间线">
       <div className="lab-timeline__header">
         <div className="lab-timeline__heading">
-          <span className="lab-timeline__title">RTM 数据流</span>
-          <span className="lab-timeline__entry-count" aria-label={`${entries.length} 条记录`}>{countLabel}</span>
+          <span className="lab-timeline__title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M2 12h4l3-8 4 16 3-8h6" />
+            </svg>
+            RTM 数据流
+          </span>
         </div>
 
         <div className="lab-timeline__actions">

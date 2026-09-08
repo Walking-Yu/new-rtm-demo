@@ -195,6 +195,10 @@ export class SingleRoomClient {
   private snapshot: RoomSnapshot;
   private hasAuthoritativeSnapshot = false;
   private subscribePromise?: Promise<void>;
+  private leavePromise?: Promise<void>;
+  private hostMutationTail: Promise<void> = Promise.resolve();
+  private mediaSyncPromise?: Promise<void>;
+  private mediaSyncRequested = false;
   private onlineUsers: readonly string[] = [];
   private memberNames: Readonly<Record<string, string>>;
   private memberMuted: Readonly<Record<string, boolean>>;
@@ -349,6 +353,8 @@ export class SingleRoomClient {
   }
 
   async subscribeRoom(): Promise<void> {
+    if (this.leavePromise) await this.leavePromise;
+    this.leavePromise = undefined;
     this.stopped = false;
     this.subscribing = true;
     this.publish();
@@ -397,20 +403,28 @@ export class SingleRoomClient {
     this.startRoomRuntime();
   }
 
-  async leaveRoom(reason?: string): Promise<void> {
-    if (this.stopped) return;
+  leaveRoom(reason?: string): Promise<void> {
+    if (this.leavePromise) return this.leavePromise;
     this.stopped = true;
+    this.mediaSyncRequested = false;
+    // Assign before notifying observers, so reentrant callers share this cleanup.
+    this.leavePromise = Promise.resolve().then(() => this.finishLeavingRoom());
     if (this.rtcJoinTimer) clearTimeout(this.rtcJoinTimer);
     this.rtcJoinTimer = undefined;
     this.clearRequestTimer();
     this.clearHostQueueTimers();
     if (reason) this.endedReason = reason;
     this.publish();
+    return this.leavePromise;
+  }
+
+  private async finishLeavingRoom(): Promise<void> {
     try { await this.subscribePromise; } catch { /* Clean a partially subscribed room. */ }
     try { await this.rtc.leave(); } catch { /* 清理失败不覆盖退出语义。 */ }
     this.rtcJoined = false;
     this.runtimeStarted = false;
     this.publishedSeatId = undefined;
+    await this.hostMutationTail;
     await this.rtm().unsubscribeRoom();
     this.snapshot = createInitialRoomSnapshot(
       this.options.hostUserId,
@@ -430,10 +444,11 @@ export class SingleRoomClient {
     try {
       await this.rtm().initializeMemberState(this.options.displayName);
       if (this.stopped) return;
+      this.memberNames = { ...this.memberNames, [this.options.userId]: this.options.displayName };
       if (this.options.role === "host") {
         this.memberMuted = { ...this.memberMuted, [this.options.userId]: false };
-        this.publish();
       }
+      this.publish();
     } catch (error) {
       if (!this.stopped) {
         this.fail(`成员状态初始化失败：${error instanceof Error ? error.message : "未知错误"}`);
@@ -484,21 +499,21 @@ export class SingleRoomClient {
   }
 
   async approveSeatRequest(requestId: string): Promise<void> {
-    this.requireHost();
-    const request = this.queue.find((item) => item.id === requestId);
-    if (!request || !this.snapshot) throw new Error("排麦申请不存在");
-    if (Object.values(this.snapshot.seats).some((seat) => seat.userId === request.userId)) throw new Error("该用户已在麦位上");
-    const seat = this.snapshot.seats[request.seatId];
-    if (!seat || seat.userId) throw new Error("麦位已被占用");
-    const seats = { ...this.snapshot.seats, [request.seatId]: {
-      seatId: request.seatId, userId: request.userId, displayName: request.displayName,
-    } };
-    await this.hostRtm!.approveSeatRequest({
-      seats,
+    return this.mutateRoomState(async () => {
+      const request = this.queue.find((item) => item.id === requestId);
+      if (!request) throw new Error("排麦申请不存在");
+      const snapshot = this.requireSnapshot();
+      if (Object.values(snapshot.seats).some((seat) => seat.userId === request.userId)) throw new Error("该用户已在麦位上");
+      const seat = snapshot.seats[request.seatId];
+      if (!seat || seat.userId) throw new Error("麦位已被占用");
+      const seats = { ...snapshot.seats, [request.seatId]: {
+        seatId: request.seatId, userId: request.userId, displayName: request.displayName,
+      } };
+      await this.hostRtm!.approveSeatRequest({ seats });
+      this.applyRoomPatch({ seats });
+      this.setQueue(this.queue.filter((item) => item.id !== requestId && item.seatId !== request.seatId));
+      this.publish();
     });
-    this.applyRoomSnapshot({ ...this.snapshot, seats });
-    this.setQueue(this.queue.filter((item) => item.id !== requestId && item.seatId !== request.seatId));
-    this.publish();
   }
 
   async rejectSeatRequest(requestId: string): Promise<void> {
@@ -547,23 +562,25 @@ export class SingleRoomClient {
   }
 
   async forceMute(userId: string, muted: boolean): Promise<void> {
-    this.requireHost();
-    const snapshot = this.requireSnapshot();
-    const forcedMutedUserIds = muted
-      ? [...new Set([...snapshot.forcedMutedUserIds, userId])]
-      : snapshot.forcedMutedUserIds.filter((id) => id !== userId);
-    await this.hostRtm!.updateForcedMutedUsers(forcedMutedUserIds);
-    this.applyRoomSnapshot({ ...snapshot, forcedMutedUserIds });
+    return this.mutateRoomState(async () => {
+      const snapshot = this.requireSnapshot();
+      const forcedMutedUserIds = muted
+        ? [...new Set([...snapshot.forcedMutedUserIds, userId])]
+        : snapshot.forcedMutedUserIds.filter((id) => id !== userId);
+      await this.hostRtm!.updateForcedMutedUsers(forcedMutedUserIds);
+      this.applyRoomPatch({ forcedMutedUserIds });
+    });
   }
 
   async forceLeave(userId: string): Promise<void> {
-    this.requireHost();
-    const snapshot = this.requireSnapshot();
-    const seat = Object.values(snapshot.seats).find((candidate) => candidate.userId === userId);
-    if (!seat) return;
-    const seats = { ...snapshot.seats, [seat.seatId]: { seatId: seat.seatId, userId: null, displayName: null } };
-    await this.hostRtm!.updateSeats(seats);
-    this.applyRoomSnapshot({ ...snapshot, seats });
+    return this.mutateRoomState(async () => {
+      const snapshot = this.requireSnapshot();
+      const seat = Object.values(snapshot.seats).find((candidate) => candidate.userId === userId);
+      if (!seat) return;
+      const seats = { ...snapshot.seats, [seat.seatId]: { seatId: seat.seatId, userId: null, displayName: null } };
+      await this.hostRtm!.updateSeats(seats);
+      this.applyRoomPatch({ seats });
+    });
   }
 
   async kickMember(userId: string): Promise<void> {
@@ -589,6 +606,7 @@ export class SingleRoomClient {
   private async endHostRoom(): Promise<void> {
     await this.options.onRoomDissolved?.();
     this.roomDissolved = true;
+    await this.hostMutationTail;
     try {
       await this.hostRtm!.dissolveRoom();
     } finally {
@@ -610,21 +628,36 @@ export class SingleRoomClient {
   }
 
   async updateAnnouncement(announcement: string): Promise<void> {
-    this.requireHost();
     const value = announcement.trim();
     if (!value) throw new Error("房间公告不能为空");
-    await this.hostRtm!.updateAnnouncement(value);
-    this.applyRoomSnapshot({ ...this.requireSnapshot(), announcement: value });
+    return this.mutateRoomState(async () => {
+      await this.hostRtm!.updateAnnouncement(value);
+      this.applyRoomPatch({ announcement: value });
+    });
   }
 
   async setOwnMuted(muted: boolean): Promise<void> {
-    if (!this.ownSeat()) throw new Error("当前不在麦位上");
-    if (muted) await this.rtm().muteMicrophone();
-    else await this.rtm().unmuteMicrophone();
-    if (this.publishedSeatId) await this.rtc.setMicrophoneMuted(muted);
+    if (this.stopped || !this.ownSeat()) throw new Error("当前不在麦位上");
     this.ownMuted = muted;
-    this.memberMuted = { ...this.memberMuted, [this.options.userId]: muted };
     this.publish();
+    if (this.rtcJoined) await this.syncOwnMedia();
+  }
+
+  /** Compute each write only when earlier room mutations have settled. */
+  private mutateRoomState(operation: () => Promise<void>): Promise<void> {
+    this.requireHost();
+    const result = this.hostMutationTail.then(() => {
+      this.requireHost();
+      return operation();
+    });
+    // Keep failures visible to the caller without poisoning subsequent mutations.
+    this.hostMutationTail = result.catch(() => {});
+    return result;
+  }
+
+  private applyRoomPatch(patch: Partial<Pick<RoomSnapshot, "seats" | "announcement" | "forcedMutedUserIds">>): void {
+    if (this.stopped || this.roomDissolved) return;
+    this.applyRoomSnapshot({ ...this.requireSnapshot(), ...patch });
   }
 
   async sendInteraction(type: "chat.message" | "emoji.reaction" | "gift.sent", value: string): Promise<void> {
@@ -901,17 +934,19 @@ export class SingleRoomClient {
   }
 
   private async onSeatInvitationAccepted(envelope: RoomRtmEnvelope, context: RtmMessageContext): Promise<void> {
-    const snapshot = this.requireSnapshot();
-    const seatId = String(envelope.payload.seatId ?? "");
-    const seat = snapshot.seats[seatId];
-    if (!seat || seat.userId) return;
-    const seats = { ...snapshot.seats, [seatId]: {
-      seatId,
-      userId: context.publisher,
-      displayName: this.getMemberDisplayName(context.publisher),
-    } };
-    await this.hostRtm!.updateSeats(seats);
-    this.applyRoomSnapshot({ ...snapshot, seats });
+    return this.mutateRoomState(async () => {
+      const snapshot = this.requireSnapshot();
+      const seatId = String(envelope.payload.seatId ?? "");
+      const seat = snapshot.seats[seatId];
+      if (!seat || seat.userId || Object.values(snapshot.seats).some(item => item.userId === context.publisher)) return;
+      const seats = { ...snapshot.seats, [seatId]: {
+        seatId,
+        userId: context.publisher,
+        displayName: this.getMemberDisplayName(context.publisher),
+      } };
+      await this.hostRtm!.updateSeats(seats);
+      this.applyRoomPatch({ seats });
+    });
   }
 
   private onSeatInvitationRejected(context: RtmMessageContext): void {
@@ -1055,7 +1090,27 @@ export class SingleRoomClient {
     this.hostTemporarilyAway = !this.onlineUsers.includes(hostUserId);
   }
 
-  private async syncOwnMedia(): Promise<void> {
+  /** Coalesce SDK events into one media transition at a time. */
+  private syncOwnMedia(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    this.mediaSyncRequested = true;
+    if (!this.mediaSyncPromise) {
+      this.mediaSyncPromise = Promise.resolve().then(async () => {
+        while (this.mediaSyncRequested && !this.stopped) {
+          this.mediaSyncRequested = false;
+          await this.reconcileOwnMedia();
+        }
+      }).catch(error => {
+        if (!this.stopped) this.fail(`麦克风状态同步失败：${error instanceof Error ? error.message : "未知错误"}`);
+      }).finally(() => {
+        this.mediaSyncPromise = undefined;
+        if (this.mediaSyncRequested && !this.stopped) void this.syncOwnMedia();
+      });
+    }
+    return this.mediaSyncPromise;
+  }
+
+  private async reconcileOwnMedia(): Promise<void> {
     const seat = this.ownSeat();
     if (!seat) {
       this.waitingSeatId = undefined;
@@ -1064,42 +1119,43 @@ export class SingleRoomClient {
         await this.rtc.unpublishMicrophone();
         this.publishedSeatId = undefined;
       }
-      if (this.options.role === "audience") await this.clearOwnSeatMediaState();
+      if (!this.stopped && this.options.role === "audience") await this.clearOwnSeatMediaState();
       return;
     }
-    if (this.publishedSeatId === seat.seatId) {
-      await this.rtc.setMicrophoneMuted(
-        this.ownMuted || (this.snapshot?.forcedMutedUserIds.includes(this.options.userId) ?? false),
-      );
-      return;
-    }
+    const stillSeated = () => !this.stopped && this.ownSeat()?.seatId === seat.seatId;
     this.waitingSeatId = undefined;
     this.clearRequestTimer();
-    try {
-      await this.rtc.publishMicrophone();
-      this.publishedSeatId = seat.seatId;
-      if (this.ownMuted || this.snapshot?.forcedMutedUserIds.includes(this.options.userId)) {
-        await this.rtc.setMicrophoneMuted(true);
+    if (this.publishedSeatId !== seat.seatId) {
+      try {
+        await this.rtc.publishMicrophone();
+        if (!stillSeated()) {
+          await this.rtc.unpublishMicrophone();
+          this.publishedSeatId = undefined;
+          return;
+        }
+        this.publishedSeatId = seat.seatId;
+      } catch (error) {
+        if (!stillSeated()) return;
+        const captureHealthy = this.rtc.isMicrophoneCaptureHealthy();
+        if (captureHealthy) await this.clearOwnMicrophoneError();
+        else await this.reportOwnMicrophoneError();
+        if (stillSeated()) this.fail(captureHealthy
+          ? `音频发布失败，本地麦克风采集正常，麦位已保留：${error instanceof Error ? error.message : "未知错误"}`
+          : `麦克风采集失败，麦位已保留：${error instanceof Error ? error.message : "未知错误"}`);
+        return;
       }
-    } catch (error) {
-      const captureHealthy = this.rtc.isMicrophoneCaptureHealthy();
-      if (captureHealthy) await this.clearOwnMicrophoneError();
-      else await this.reportOwnMicrophoneError();
-      this.fail(captureHealthy
-        ? `音频发布失败，本地麦克风采集正常，麦位已保留：${error instanceof Error ? error.message : "未知错误"}`
-        : `麦克风采集失败，麦位已保留：${error instanceof Error ? error.message : "未知错误"}`);
-      return;
     }
-    try {
-      if (this.memberMuted[this.options.userId] !== this.ownMuted) {
-        if (this.ownMuted) await this.rtm().muteMicrophone();
-        else await this.rtm().unmuteMicrophone();
-      }
-      this.memberMuted = { ...this.memberMuted, [this.options.userId]: this.ownMuted };
-      await this.clearOwnMicrophoneError();
-    } catch (error) {
-      this.fail(`麦克风状态同步失败：${error instanceof Error ? error.message : "未知错误"}`);
+    await this.rtc.setMicrophoneMuted(this.ownMuted || this.snapshot.forcedMutedUserIds.includes(this.options.userId));
+    if (!stillSeated()) return;
+    const muted = this.ownMuted;
+    if (this.memberMuted[this.options.userId] !== muted) {
+      if (muted) await this.rtm().muteMicrophone();
+      else await this.rtm().unmuteMicrophone();
+      if (this.stopped) return;
+      this.memberMuted = { ...this.memberMuted, [this.options.userId]: muted };
+      this.publish();
     }
+    if (stillSeated()) await this.clearOwnMicrophoneError();
   }
 
   private async reportOwnMicrophoneError(): Promise<void> {

@@ -17,6 +17,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test';
+import type { TraceEntry } from '../src/shared/timeline/traceStore';
 
 /** 占位 App ID。32 位十六进制，形状合法但不对应任何真实项目。 */
 const PLACEHOLDER_APP_ID = '00000000000000000000000000000000';
@@ -108,6 +109,43 @@ async function withVisualTraceFixtures(page: Page): Promise<void> {
       + `\nconst visualEntries = ${JSON.stringify(entries)};\nexport function useMergedTraces() { return visualEntries; }\n`;
     await route.fulfill({ response, body });
   });
+}
+
+/**
+ * Only this ordering case substitutes the trace source. Keep the real subscription hook
+ * and merge so shuffled timestamps exercise the production ordering boundary. The local
+ * event appends immutable snapshots; it never calls an RTM adapter or enters a room.
+ */
+async function withUpdatingTraceFixtures(page: Page, initialEntries: readonly TraceEntry[]) {
+  const eventName = 'e2e:timeline:append';
+  await page.route('**/src/shared/timeline/useMergedTraces.ts*', async (route) => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const declaration = 'export function useMergedTraces(';
+    expect(original.split(declaration)).toHaveLength(2);
+    const body = original.replace(declaration, 'export function originalUseMergedTraces(') + `
+      let fixtureEntries = ${JSON.stringify(initialEntries)};
+      const fixtureListeners = new Set();
+      const fixtureSources = [{
+        getEntries: () => fixtureEntries,
+        subscribe: listener => {
+          fixtureListeners.add(listener);
+          return () => fixtureListeners.delete(listener);
+        },
+      }];
+      window.addEventListener(${JSON.stringify(eventName)}, event => {
+        fixtureEntries = [...fixtureEntries, ...event.detail];
+        fixtureListeners.forEach(listener => listener());
+      });
+      export function useMergedTraces() { return originalUseMergedTraces(fixtureSources); }
+    `;
+    await route.fulfill({ response, body });
+  });
+  return async (entries: readonly TraceEntry[]) => {
+    await page.evaluate(({ eventName, entries }) => {
+      window.dispatchEvent(new CustomEvent(eventName, { detail: entries }));
+    }, { eventName, entries });
+  };
 }
 
 /**
@@ -846,6 +884,77 @@ test('类型筛选直接展示 API 和事件颜色，取消独立图例', async 
   }
 });
 
+test('数据流最新在前：乱序时间、筛选、旧记录滚动和折叠期间追加', async ({ page }, testInfo) => {
+  if (testInfo.project.name === 'desktop-chromium') await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await withAppId(page);
+  const unexpected = collectErrors(page);
+  const baseTime = 1_700_000_000_000;
+  const nameFor = (offset: number) => `${offset % 2 === 0 ? 'api' : 'event'}.operation-${String(offset).padStart(2, '0')}`;
+  // Arrival sequence intentionally differs from timestamp order in both directions.
+  const offsets = [12, 2, 19, 5, 0, 22, 8, 15, 3, 20, 10, 17, 6, 23, 1, 18, 9, 14, 4, 21, 7, 16, 11, 13];
+  const initialEntries: TraceEntry[] = offsets.map((offset, index) => ({
+    at: baseTime + offset * 1_000,
+    seq: index + 1,
+    kind: offset % 2 === 0 ? 'api' : 'event',
+    name: nameFor(offset),
+    summary: `时间顺序 ${offset}；到达顺序 ${index + 1}`,
+    uid: 'timeline-order-fixture',
+    role: 'host',
+  }));
+  const append = await withUpdatingTraceFixtures(page, initialEntries);
+  await page.goto('/social/voice-room');
+  await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+  await ensureTimelineExpanded(page);
+  const rows = page.getByTestId('trace-row');
+  const names = rows.locator('.lab-trace__name');
+  const body = page.getByTestId('timeline-body');
+  const expectedOffsets = Array.from({ length: 24 }, (_, index) => 23 - index);
+  const expectedNames = expectedOffsets.map(nameFor);
+  await expect(names).toHaveText(expectedNames);
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(rows.first()).toBeInViewport();
+
+  for (const kind of ['api', 'event'] as const) {
+    const filter = page.getByTestId('filter-kind').locator(`button[data-kind="${kind}"]`);
+    await filter.click();
+    await expect(names).toHaveText(expectedOffsets.filter(offset => (offset % 2 === 0 ? 'api' : 'event') === kind).map(nameFor));
+    await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+    await filter.click();
+    await expect(names).toHaveText(expectedNames);
+  }
+
+  await body.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await expect(rows.last()).toBeInViewport();
+  await expect(rows.last().locator('.lab-trace__name')).toHaveText('api.operation-00');
+  await expect(rows.first()).not.toBeInViewport();
+
+  // The most recently delivered entry is older; it must not displace the newest timestamp.
+  const newest: TraceEntry = { ...initialEntries[0], seq: 25, at: baseTime + 30_000, name: 'api.newest-visible', summary: '查看旧记录时到达的新调用' };
+  const delayed: TraceEntry = { ...initialEntries[1], seq: 26, at: baseTime + 4_500, kind: 'event', name: 'event.delayed', summary: '晚到的旧时间戳事件' };
+  await append([newest, delayed]);
+  const afterAppend = ['api.newest-visible', ...expectedNames];
+  afterAppend.splice(afterAppend.indexOf('api.operation-04'), 0, 'event.delayed');
+  await expect(names).toHaveText(afterAppend);
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(rows.first()).toBeInViewport();
+
+  await body.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(rows.last()).toBeInViewport();
+  await page.getByTestId('timeline-toggle').click();
+  await expect(page.getByTestId('timeline-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await append([{ ...newest, seq: 27, at: baseTime + 31_000, name: 'api.newest-while-collapsed', summary: '折叠期间的新调用' }]);
+  await expect(page.getByTestId('timeline-count')).toHaveText('27');
+  await ensureTimelineExpanded(page);
+  await expect(names).toHaveText(['api.newest-while-collapsed', ...afterAppend]);
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(rows.first()).toBeInViewport();
+  await expect(rows.last()).not.toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath('timeline-newest-first.png') });
+  expect(unexpected()).toEqual([]);
+});
+
 test.describe('v1.2 数据流视觉增量', () => {
   for (const theme of ['light', 'dark'] as const) {
     test(`${theme}：方格、卡片投影、标题图标与长记录布局`, async ({ page }, testInfo) => {
@@ -921,9 +1030,10 @@ test.describe('v1.2 数据流视觉增量', () => {
       await expect(rows.first()).toHaveCSS('background-color', theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(20, 21, 23)');
       await expect(rows.first()).toHaveCSS('border-top-width', '1px');
       await expect(rows.first()).toHaveCSS('border-left-width', '3px');
-      await expect(rows.first()).toHaveAttribute('title', new RegExp(LONG_TRACE_SUMMARY));
-      await expect(rows.nth(1).locator('.lab-trace__kind')).toHaveText('EVENT');
-      for (const locator of [rows.first().locator('.lab-trace__name'), rows.first().locator('.lab-trace__summary-text')]) {
+      const longApi = rows.filter({ has: page.locator('.lab-trace__name', { hasText: LONG_API_NAME }) });
+      await expect(longApi).toHaveAttribute('title', new RegExp(LONG_TRACE_SUMMARY));
+      await expect(rows.filter({ has: page.locator('.lab-trace__name', { hasText: /^presence$/ }) }).locator('.lab-trace__kind')).toHaveText('EVENT');
+      for (const locator of [longApi.locator('.lab-trace__name'), longApi.locator('.lab-trace__summary-text')]) {
         await expect(locator).toHaveCSS('white-space', 'nowrap');
         await expect(locator).toHaveCSS('text-overflow', 'ellipsis');
         expect(await locator.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
@@ -934,7 +1044,7 @@ test.describe('v1.2 数据流视觉增量', () => {
       await expect(failed.getByTestId('trace-error').locator('code')).toBeVisible();
       await expect(failed.getByTestId('trace-error')).toContainText(LONG_TRACE_ERROR);
       await expect(failed.locator('.lab-trace__error-message')).toHaveCSS('text-overflow', 'ellipsis');
-      await expect(rows.nth(3).locator('.lab-trace__summary')).toHaveCount(0);
+      await expect(rows.filter({ has: page.locator('.lab-trace__name', { hasText: /^linkState$/ }) }).locator('.lab-trace__summary')).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath(`trace-v1-2-${theme}.png`) });
     });
@@ -946,7 +1056,7 @@ test.describe('v1.2 数据流视觉增量', () => {
     await withVisualTraceFixtures(page);
     await page.goto('/social/voice-room');
     await ensureTimelineExpanded(page);
-    const row = page.getByTestId('trace-row').first();
+    const row = page.getByTestId('trace-row').filter({ has: page.locator('.lab-trace__name', { hasText: LONG_API_NAME }) });
     await expect(row).toHaveCSS('animation-duration', '0.35s, 1.8s');
     await expect(row).toHaveCSS('animation-iteration-count', '1, 2');
     await expect(row).toHaveCSS('animation-delay', '0s, 0.3s');

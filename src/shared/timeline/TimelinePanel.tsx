@@ -6,7 +6,7 @@
  *
  * ## 三条不要「优化」掉的设计
  *
- * **单列交错，不按端分栏。** 两端的条目混在同一列里按时间排。分栏会把
+ * **单列交错，不按端分栏。** 两端的条目混在同一列里按时间从新到旧排。分栏会把
  * 「一个动作在两端引发的因果链」拆散，而那正是本 demo 要展示的东西。
  *
  * **只呈现 RTM，不含 RTC。** 混入 RTC 节点会稀释「RTM 数据流」这条主线。
@@ -177,7 +177,8 @@ export function TimelinePanel({
   // 固定两类，首次进入时筛选器即说明颜色；不随过滤结果变化。
   const kinds = ['api', 'event'] as const;
   const visible = useMemo(
-    () => filterTraces(entries, filter).filter((entry) => showLinkState || entry.name !== 'linkState'),
+    // 归并快照保持时间升序，只反转过滤后生成的展示数组；同毫秒按较大 seq 在前。
+    () => filterTraces(entries, filter).filter((entry) => showLinkState || entry.name !== 'linkState').reverse(),
     [entries, filter, showLinkState],
   );
   const counts = useMemo(() => {
@@ -185,11 +186,11 @@ export function TimelinePanel({
     return { api, event: entries.length - api };
   }, [entries]);
 
-  // 新的 RTM 调用或事件进入时，始终把时间线定位到最新一项。
+  // 新记录、筛选变化或重新展开时，把时间线定位到顶部的最新一项。
   useLayoutEffect(() => {
     const body = bodyRef.current;
-    if (body) body.scrollTop = body.scrollHeight;
-  }, [visible]);
+    if (body) body.scrollTop = 0;
+  }, [visible, collapsed]);
 
   /** 多选：已选则移除，未选则加入。 */
   function toggleKind(value: string) {
@@ -287,7 +288,7 @@ export function TimelinePanel({
         {visible.length === 0 ? (
           <p className="lab-timeline__empty">
             {entries.length === 0
-              ? <>RTM 调用与事件将在这里<br />按发生顺序交错呈现。</>
+              ? <>RTM 调用与事件将在这里<br />按时间倒序呈现，最新记录在顶部。</>
               : '当前筛选下暂无记录。'}
           </p>
         ) : (

@@ -1,204 +1,158 @@
-# Handoff: RTM 在线体验馆（RTM Online Experience Hall）
+# RTM 在线体验馆 · 墨 Ink 设计交接
 
-> 来源：Claude Design 项目「项目UI重构范围确认」（projectId `61b2821e-e176-46aa-aadf-1cba74446f32`），目录 `design_handoff_rtm_experience_hall/`。
-> 本目录是随仓库分发的设计交接包完整副本；用浏览器直接打开任一 `.dc.html`（需与同目录的 `support.js` 一起）即可查看。
+> 当前基线：设计 v1.2 + 2026-09-08 已验收增量，对齐应用提交 `51e9f6d`。
+> 来源：Claude Design 项目「项目UI重构范围确认」的 `design_handoff_rtm_experience_hall/`。本目录保留来源结构，并随本仓库实现持续更新。设计版本不代表应用发布版本。
 
-## Overview
-一个面向开发者的 RTM 能力在线体验产品。核心是「语聊房」场景：用户以房主或听众身份进入真实房间，
-左侧是建议体验流程（引导任务），中间是语聊房舞台（麦位 + 治理面板 + 公告 + 公屏），
-右侧是 RTM 数据流（实时 API 调用与事件回调的时间线）。目标是让开发者一边玩、一边看清每个交互背后
-触发了哪些 RTM 调用。
+## 文件与使用方式
 
-## About the Design Files
-本包内的 `.dc.html` 文件是**用 HTML 写成的设计稿**——用于表达最终视觉与交互意图的原型，
-**不是可直接上线的生产代码**。任务是在目标代码库既有的技术环境中（React / Vue / 小程序 / 原生等）
-**按既有工程规范重新实现这些设计**：复用现有组件库、状态管理、路由与样式方案。
-若项目尚无前端环境，则自行选择最合适的框架从零搭建，再按本文档实现。
-请勿把 HTML 原型直接塞进产品；也请勿把原型里的内联样式当作样式规范来照抄结构。
+| 文件 | 当前用途 |
+| --- | --- |
+| [Lab.dc.html](Lab.dc.html) | 主参考原型：外壳、房主、听众、入口、占位与配置引导，以及浅深主题和窄屏布局。 |
+| [Design System.dc.html](Design%20System.dc.html) | 当前设计系统：颜色、字体、间距、组件、状态、数据流、图标与暗色映射。 |
+| [Redesign.dc.html](Redesign.dc.html) | 十个视图的对照画板，通过独立 iframe 引用当前 Lab，隔离两种主题和交互状态，各展示五个视图。 |
+| [Concept.dc.html](Concept.dc.html) | 早期概念探索，仅保留设计过程，不作为当前实现规范。 |
+| [Trace Palettes.dc.html](Trace%20Palettes.dc.html) | 历史配色候选，保留选色过程；整行 wash 底色已被 v1.2 边框方案替代。 |
+| [support.js](support.js) | 原设计稿配套运行文件；保持生成内容不变。 |
 
-## Fidelity
-**High-fidelity（高保真）**。颜色、字号、间距、圆角、动效时长均为最终值，请按像素级还原。
-唯一例外：头像目前是纯色圆 + 文字首字，接入真实用户头像即可。
+通过 HTTP 静态服务打开上述 HTML，并保持文件与 `support.js` 同目录。项目开发服务运行时，可访问 `/design/rtm-experience-hall/Lab.dc.html`。原型运行时从 CDN 加载固定版本的 React，首次打开需要联网。
 
-## Screens / Views
-原型里有 5 个视图（`view` prop 切换）：`host`（房主视角）、`listener`（听众视角）、
-`join`（进房前）、`docs`（文档占位）、`console`（控制台占位）。核心是前两个。
+主原型用 `?view=host|audience|entry|placeholder|guide&theme=light|dark` 选择预览。历史导入属性 `listener / join / docs / console` 分别映射为 `audience / entry / placeholder / guide`。对照画板保持 1440 × 900 展示；手机验收使用主原型。
 
-### 1. 全局框架 Shell
-- **Purpose**：所有视图共用的三栏骨架。
-- **Layout**：
-  - 页面根：`1440 × 900`（设计基准，实际按容器自适应），`display:grid`，行 `56px / 1fr`。
-    背景 `canvas`，文字色 `fg`（**必须显式声明在根节点上**，不能只写在 body 上）。
-  - 顶栏 `56px`：背景 `surface`，下边框 `1px line`，左右 padding `28px`，`display:flex`，`gap:40px`。
-    - 左：品牌 `RTM`（700 / 15px / letter-spacing -.01em）+ 竖线分隔 + `在线体验馆`（等宽 / 500 / 11px / `mono` 色 / letter-spacing .04em / padding-left 10px / border-left 1px line）。
-    - 中：导航 `nav`，等宽 12px，每项 `padding:0 12px`，选中项 `border-bottom:2px solid ink` 且 `margin-bottom:-1px`，序号用 `mono2` 色 500 字重。
-    - 右：连接状态（等宽 11px：`RTM` + 6px 圆点 + 状态词）+ 主题切换按钮（见组件）。`gap:16px`。
-  - 主体：`display:grid`，列 `leftW / 1fr / rightW`。
-    - 左栏 `aside`：`sideW` 宽（展开）或 `48px`（收起），背景 `surface`，右边框 `1px line`。
-    - 中区 `main`：`padding: pad`，背景 `canvas`。
-    - 右栏 `aside`：`tlW` 宽（展开）或 `48px`（收起），背景 `surface`，左边框 `1px line`。
-  - 左右栏顶部使用自身 `padding-top: pad`，**不与语聊房卡片强制等高、不加额外分隔横线**（明确的设计决定，勿"优化"）。
+这些 HTML 是可交互设计稿，使用虚构成员和本地模拟状态，不连接 RTM／RTC、不创建真实房间。生产应用沿用现有 React、路由和状态管理；颜色与样式的唯一实现来源是 [src/app/styles.css](../../src/app/styles.css)。设计稿不作为第二套应用入口。
 
-### 2. 建议体验流程（左栏）
-- **Purpose**：把 RTM 能力拆成有序的体验任务，引导用户逐条完成。
-- **Layout**：`display:grid`，行 `auto / 1fr`。标题行 `建议体验流程`（700 / `h2` / letter-spacing -.01em）+ 折叠按钮（28×28，1px line，圆角 6px，图标收起时 `scaleX(-1)`）。
-- **Components**：
-  - 分节头：等宽 11px `mono` 色，形如 `01 / 场景任务`，右侧进度 `2/5`。
-  - 进度条：`track` 色底，已完成段落用 accent 渐变，高度 2px。
-  - 任务项：左侧 20px 处 7px 圆点（`box-shadow: 0 0 0 3px surface` 形成断线效果），标题 + 右侧状态。
-    - 完成：圆点 `success`，标题 `fg` 600，状态 `✓ 已完成`（`success` 色）。
-    - 待体验：圆点 `dash`，标题 `fg2` 500，状态 `✓ 待体验`（`disabled` 色）。
-    - **只有这两种状态**，不要 in-progress / error 态。
-  - CTA `前往 Console 创建项目`：高 `btnH`，圆角 6px，1px accent 渐变描边，右侧 ↗ 图标。
-  - 分节之间：`border-top: 1px line` + `padding-top: pad`。
-- **收起态**：宽 48px，仅显示居中的展开按钮 + 竖排文字「体验流程」+ 完成计数。
+## 同步范围
 
-### 3. 语聊房（中区，host / listener）
-- **Purpose**：真实的语聊房互动。
-- **Layout**：卡片 `display:grid`，列 `1fr / panelW`，行 `hdrH / 1fr / auto`；背景 `surface`，1px line，圆角 10px，`overflow:hidden`。
-  - **header**（跨两列，高 `hdrH`，下边框 1px line，左右 padding `pad`）：
-    左 `HOST` 徽标（等宽 11px，1px ink 描边，圆角 4px，padding 3px 7px）+ 房间名（700 / `h1`）；
-    右 `暂时离开`（1px line，`fg2`）+ `解散房间`（1px danger 描边，`danger` 文字）。按钮高 `btnH`，圆角 6px。
-  - **左列**（padding `pad`，`display:grid`，`gap`）：麦位区 → 公告 → 公屏。
-  - **右列**（`grid-column:2 / grid-row:2/4`，背景 `subtle`，左边框 1px line，padding `pad`）：治理面板。
-- **Components**：
-  - **分节标题行**（麦位 / 公告 / 公屏 三者同级）：`padding-top: gap` + `border-top: 1px line`，
-    左侧标题 600 字重 + 等宽 11px `mono` 的元信息（`2 / 8 · 4 ONLINE` / `PINNED` / `12 MESSAGES`）。
-    麦位区在最上方无需上边框。
-  - **麦位网格**：`repeat(4, 1fr)`，行高 132px，`gap`。
-    - 已占用：1px line，圆角 8px，背景 surface；`avatar` 尺寸圆形头像（`ink` 底 / `onInk` 字）；
-      名字 600 `fs`；状态等宽 11px。说话中：`border-color: ink` + `box-shadow: 0 0 12px rgba(ink,.20)`，
-      动画 `lab-breathe 1.8s ease-in-out infinite`（opacity/spread 呼吸）。
-    - 空位：`1px dashed dash`，圆角 8px，`avEmpty` 圆底 + `+`，文字 `空麦位 / OPEN`（`faint`）。
-    - 选中：外加 `box-shadow: 0 0 0 2px ink`（ring）。
-  - **公告**：分节标题行（`公告` + `PINNED`）+ 正文 `fsSm` / line-height 1.6 / `fg` 色。**无卡片底色、无边框**。
-  - **公屏**：可滚动消息列，每条 `padding: rowP 0`；发言人名 600 + 等宽时间戳 `mono2`；正文 `fsSm` / 1.6。
-    系统消息用 `mono` 色等宽小字居中。底部输入行：input（1px line，圆角 6px，高 `btnH`）+ 发送按钮（`ink` 底 `onInk` 字）。
-  - **治理面板（房主）**：`已选 · 02 小鹿` 卡（1px ink，圆角 8px）内含 `静音 / 下麦 / 踢出`（踢出为 danger 文字）；
-    `排麦申请` 列表（每行姓名 + `→ SEAT 03 · 25s` 等宽小字 + `同意`（ink 实心）/`拒绝`（line 描边））；
-    `更新公告` 输入 + `发布`；`在线听众` 列表（每行 `邀请上麦` / `封禁`）。
-    分节标题同样用 600 + 右侧等宽计数。
-  - **听众视角**：无治理面板列（`panelW` 变 0），header 右侧为 `申请上麦` / `离开房间`。
+| 已验收变动 | 当前规范 |
+| --- | --- |
+| v1.2：主区背景 | 72px 方格，使用独立 `grid` 语义色。 |
+| v1.2：语聊房投影 | 房间卡片使用浅深主题各自的双层投影。 |
+| v1.2：左右栏标题图标 | 路线／脉冲，16px、描边 1.8，跟随文字色。 |
+| v1.2：数据流边框 | surface 行底、1px 外框、3px 类型色左框与 API／EVENT 标签。 |
+| v1.2：固定行与摘要 | comfortable 固定 70px，长摘要单行省略，悬浮可查看完整内容。 |
+| v1.2：边框呼吸 | 1.8s × 2，仅改变边框与光晕，行底不闪动。 |
+| 昵称 | 创建和加入各有选填昵称；20 个 Unicode 码点，空值默认，允许重名。 |
+| 公屏 | 五条普通单行消息的可视高度，全部历史保留并支持上下滚动。 |
+| 标题计数 | 展开数据流标题旁不显示分类汇总；筛选胶囊计数与折叠总数保留。 |
+| 房主标记 | 移除麦位上的“房主”可见文字，保留 22px 实心皇冠及可访问名称。 |
 
-### 4. RTM 数据流（右栏）
-- **Purpose**：把每次交互对应的 RTM API 调用与事件回调实时可视化。
-- **Layout**：`display:grid`，行 `auto / auto / 1fr`。
-  - 标题行：`RTM 数据流`（700 / `h2`）+ 等宽 `5 API · 4 EVENT`；右侧 `清空` `隐藏连接` 文字链（`fg2`）+ 折叠按钮。
-  - 图例行：`API` / `EVENT` 两个 pill（1px line，圆角 999px，内含对应色圆点 + 计数）。
-  - 列表：`overflow:auto`，每行 `padding: traceP`，圆角 6px，`gap`。
-- **Row 结构**：等宽时间戳（11px，`mono`）+ 类型圆点（7px）+ 名称（等宽 13px 600）+ 可选 TAG（等宽 10px，1px 描边）+ 右侧耗时（等宽 11px `mono`）；第二行摘要 `fsSm` / `fg2` / 1.5。
-- **配色（wash 方案，浅色主题）**：API 行底 `#a7e5d3` 系薄荷绿、圆点 `#2fa98a`；EVENT 行底 `#a8c8e8` 系天蓝、圆点 `#3d7fc2`；深色主题下改用 `apiBg` / `eventBg` 深底 + 提亮圆点。
-- **新到行**：`lab-rowbreathe 1.8s ease-in-out infinite`（背景明度呼吸），1–2 个呼吸周期后转静态。
-- **收起态**：宽 48px，竖排「数据流」+ 条目计数 + 展开按钮（图标镜像）。
+本轮保持原有黑白灰骨架、字体、comfortable 密度、导航、三栏结构、麦位数量、业务能力与主题切换。后续已确认的产品变化应同时更新主原型、设计系统和本说明，避免继续沿用历史探索稿的要求。
 
-## Interactions & Behavior
-- **主题切换**：顶栏按钮点击在 light / dark 间切换，整套 token 立即替换（无过渡动画）。
-  按钮：高 28px，圆角 14px，1px line，等宽 10px letter-spacing .08em；
-  内含 11px 圆（1px `fg` 描边）——**浅色态实心 `fg`，深色态透明**；标签 `LIGHT` / `DARK`。
-  hover：`border-color: dashStrong`，文字转 `fg`。
-- **左右栏折叠**：点击各自的折叠按钮，栏宽在 `sideW/tlW ↔ 48px` 间切换，图标水平镜像；收起后仅保留竖排栏名 + 计数。
-- **麦位选择**：点击已占用麦位 → 选中 ring + 右侧治理面板同步；点击空麦位（听众）→ 触发申请上麦。
-- **排麦申请**：`同意` → 该听众进入麦位、数据流追加 `updateChannelMetadata` + `storage UPDATE`；`拒绝` → 仅移除申请行。
-- **发送消息**：回车或点击发送 → 公屏追加消息 + 数据流追加 `publish`（约 41ms）。
-- **发布公告**：`发布` → 公告正文替换 + 数据流追加 `setChannelMetadata` / `updateChannelMetadata`。
-- **数据流新增**：新行插入列表底部并自动滚动到底，带呼吸动效。`清空` 清空列表并显示空态
-  （居中 8px 圆点 + `mono` 色说明文字）。
-- **动效原则**：只用 1.8s 呼吸（ease-in-out infinite）表达"活着/刚发生"；其余状态切换无缓动或 ≤120ms。
-  不要弹跳、不要位移动画。
-- **响应式**：设计基准 1440 宽。<1280 时右栏优先收起，<1024 时左栏也收起。
+## 全局框架
 
-## State Management
-```
-view: 'host' | 'listener' | 'join' | 'docs' | 'console'
-theme: 'light' | 'dark'            // 用户切换后覆盖初始值
-density: 'compact' | 'regular' | 'comfortable'
-leftOpen: boolean                  // 体验流程栏
-rightOpen: boolean                 // 数据流栏
-seats: Array<{ index, uid, name, role: 'host'|'guest', speaking, muted } | null>  // 长度 8
-selectedSeat: number | null
-requests: Array<{ uid, name, seat, waitedSec }>
-listeners: Array<{ uid, name }>
-announcement: string
-messages: Array<{ id, uid, name, text, time, kind: 'user'|'system' }>
-traces: Array<{ id, time, kind: 'api'|'event', name, tag?, durationMs?, summary, fresh }>
-connection: 'connected' | 'connecting' | 'reconnecting' | 'disconnected'
-tasks: Array<{ id, title, done }>  // 只有 done / pending
-```
-数据获取：全部来自 RTM SDK 的实时回调（presence / storage / message），无独立后端轮询。
-每个 UI 动作先乐观更新本地状态，再由 SDK 回调校正；治理动作在生产环境必须经服务端校验。
+设计基准为 1440 × 900，实际按窗口自适应。顶部为 56px；左右栏展开宽度为 252px／420px，折叠后各为 48px。中区 `padding:24px`，canvas 底上叠加 72px 方格；侧栏与房间使用 surface。
 
-## Design Tokens
+顶栏保留品牌、七个一级场景、页面级 RTM 连接状态和主题按钮。场景为语聊房、1V1呼叫邀请、电商直播、在线课堂、虚拟世界、游戏互动、文档协同；只有语聊房已实现。主题按钮在 light／dark 间立即切换，生产偏好由 `theme.ts` 保存，无主题过渡动画。
 
-### Light
-```
-canvas #fafafa   surface #ffffff   subtle #fbfbfc   code #f6f7f8   avEmpty #f3f4f6
-lineSubtle #f0f1f3  line #e6e7ea  track #eeeff1  dash #dcdee2  dashStrong #c4c7cc
-faint #b3b7bd  disabled #a3a7ae  mono2 #8b8f96  mono #6b7079  fg2 #5f6368
-fg #111214  ink #111214  onInk #ffffff
-success #1f8a5b  danger #c8362f
-event #5b5bd6  eventText #4f4fc4  eventLine #c9c9f2  eventBg #f5f5fd  apiBg #f3f4f6
+左右栏标题分别使用路线与脉冲图标（16 × 16、stroke 1.8），标题后保留原控制项。侧栏顶部使用自身 padding，不额外增加与房间标题强制对齐的横线。三栏不提供拖拽分隔器。
+
+小于 1280px 时右栏优先收起，小于 1024px 时左栏也收起。760px 及以下，两侧保留 48px 窄栏，展开后覆盖主区并有可关闭遮罩；主区 padding 12px，房间改成单列，页面可纵向滚动。低高度桌面入口在卡片内滚动，保证标题与提交按钮可达。
+
+## 左侧体验流程
+
+标题为“建议体验流程”，分为场景任务、Console 创建项目入口和开发文档。场景任务只有“已完成／待体验”两种显示状态；操作说明在悬浮、键盘聚焦或触屏点击时查看，不展开第二层子任务列表。
+
+五个任务依次为“建立房间连接”“看见成员在线”“申请与审批上麦”“发送房内消息”“同步房间状态”。进度条使用品牌渐变；完成状态用 success，未完成用中性色。Console CTA 仅用渐变描边，不用渐变实心底。
+
+生产进度依据成功 API 和已消费的业务状态推进，失败调用、默认麦位、本地聊天回显不能冒充远端证据。原型中的任务状态仅用于演示视觉。
+
+## 创建与加入入口
+
+入口包含眉标、标题、说明和创建／加入两张卡片。每张卡片独立包含房间名称、选填昵称及提交按钮；不增加邀请复制、粘贴链接或登录资料表单。
+
+- 字段标签为“你的昵称（选填）”。空值沿用角色默认：房主 `Host`，听众为基于 UID 稳定生成的英文名加三位数字。
+- 昵称先校验非法字符，再做 NFC 规范化和首尾空白清理；最多 20 个 Unicode 码点，不能使用 HTML `maxlength=20` 代替码点计数。允许中文、数字、Emoji、组合 Emoji 及重名。
+- 拒绝换行、不可见控制字符、孤立代理项和没有可见内容的非空输入；保留组成正常文字／Emoji 所需的合法连接符。无效输入保留草稿、显示字段错误并禁用对应提交。
+- 中文输入法组合输入的 Enter 不提交。非法换行粘贴必须提示错误，不能被单行输入框悄悄删掉。
+- 两张卡片分别保存草稿；失败、取消或暂离后可修改。进入房间后本轮昵称固定，不增加房内改名入口。
+- UID 自动生成且与昵称分离。重名不会合并用户，麦位、权限协作、邀请与封禁仍按 UID 区分。生产 URL 刷新保留 UID 与昵称；原型不模拟持久身份或链接恢复协议。
+- 头像取首个完整字素，优先使用 `Intl.Segmenter`，兼容降级至少保留完整 Unicode 码点。
+
+精确校验与默认值以 [nickname.ts](../../src/scenes/voice-room/nickname.ts) 和 [audience-display-name.ts](../../src/scenes/voice-room/audience-display-name.ts) 为准。
+
+## 房间、麦位与公屏
+
+房间卡片圆角 8px、1px line 边框，背景 surface，使用下表的双层投影。桌面两列为 `minmax(0,1fr) / 300px`，标题高 76px，底部输入条。左列依次为麦位、公告、公屏；右列房主显示治理面板，听众显示邀请卡、我的状态与在线听众。听众同样保留右侧面板。
+
+八个麦位保持四列，桌面高 132px、手机高 104px。普通麦位为 1px line、圆角 10px；空麦位为虚线。头像 44px，名称使用 UI 字体，机器状态词使用等宽字体。选中麦位保留 ring，说话状态保留 1.8s 无限呼吸。
+
+房主麦位在卡片上缘放置 **22 × 22px 实心皇冠**，定位 `top:-12px; left:8px`，容器横向 padding 2px、圆角 3px、surface 背景。它不能遮挡头像或麦克风图标；没有“房主”可见文字，仍保留 `aria-label` 和 `title`。房间标题的角色徽标不受此调整影响。
+
+公告保留分节标题与普通正文，不增加独立底色卡片。公屏姓名和正文同行，系统消息保留中性色；不恢复历史原型的独立时间戳列。
+
+公屏字号 13px、行高 1.5、消息间距 11px，容器最大高度 `calc(1.5em * 5 + 11px * 4)`，即 141.5px。每条消息不收缩，最小高度一行；超过后上下滚动，全部历史仍在列表中。长消息按原规则换行，所以可能少于五条完整消息同时可见，不能截掉消息凑五条。新消息到达仍滚到底部；消息区支持键盘聚焦滚动。
+
+输入条保留文字发送、礼物和爱心。生产发送成功只清空本次提交对应的草稿，等待期间的新输入与失败草稿保留。
+
+## RTM 数据流
+
+展开标题只包含脉冲图标、“RTM 数据流”与清空／连接过滤／折叠控件，**不显示 API／EVENT 分类汇总**。下面的两个筛选胶囊仍显示类型色点、标签与计数；折叠窄栏保留总数。
+
+数据流按时间倒序显示，**最新记录在顶部**；相同时间戳按采集序号倒序排列。类型筛选、连接过滤后仍保持该顺序。新记录进入、筛选变化和重新展开侧栏时，列表定位顶部。此变动仅作用于展示副本，采集与归并顺序保持不变；公屏仍按原顺序显示，新消息到达滚到底部。
+
+列表每行固定 70px、圆角 6px，行间距 10px，内边距 `14px 12px`；左列时间宽 86px，右列 `minmax(0,1fr)`，列间距 10px。第一行包括 API／EVENT 类型标签、名称和可用的耗时等信息；第二行显示单行摘要。长名称与摘要省略，不能撑高或撑宽条目。
+
+所有条目背景使用 surface，外框 1px line，左框 3px 类型色。API 使用薄荷绿，EVENT 使用天蓝；类型色也用于标签和筛选圆点，不能将整行恢复为历史 wash 配色。
+
+完整摘要通过生产条目的原生 `title` 悬浮说明查看；失败摘要与错误详情合成同一行并保留全文，失败状态用 danger 内描边表达。设计系统额外提供可聚焦的摘要示例，属于设计稿阅读辅助，不表示生产新增了浮层组件。
+
+新到条目使用入场 `.35s ease-out`，随后边框呼吸 `1.8s ease-in-out .3s 2`，结束后恢复静态；呼吸只改变边框、光晕，surface 行底始终不变。减少动态效果设置下关闭这些动画。公屏与数据流各自滚动，清空数据流不改变房间或体验进度。
+
+## 颜色与尺寸
+
+下表为当前语义色。实现统一引用 `--ink-*` 变量；设计稿内的简写不应生成另一份生产 CSS。
+
+| 语义 | 浅色 | 深色 |
+| --- | --- | --- |
+| canvas / grid | `#fafafa` / `#ececee` | `#0f1012` / `#1a1b1e` |
+| surface | `#ffffff` | `#141517` |
+| subtle / code | `#fbfbfc` / `#f6f7f8` | `#1b1c1f` / `#1b1c1f` |
+| avEmpty / track | `#f3f4f6` / `#eeeff1` | `#26272b` / `#26272b` |
+| lineSubtle / line | `#f0f1f3` / `#e6e7ea` | `#1f2024` / `#2a2b2f` |
+| dash / dashStrong | `#dcdee2` / `#c4c7cc` | `#3a3b40` / `#4a4b52` |
+| faint / disabled | `#b3b7bd` / `#a3a7ae` | `#5f6368` / `#6b7079` |
+| mono2 / mono | `#8b8f96` / `#6b7079` | `#8b8f96` / `#a3a7ae` |
+| fg2 | `#5f6368` | `#a3a7ae` |
+| fg / ink | `#111214` | `#f2f2f3` |
+| onInk | `#ffffff` | `#111214` |
+| success / danger | `#1f8a5b` / `#c8362f` | `#3fb27f` / `#e5534b` |
+| trace.api | `#2fa98a` | `#7fdcc3` |
+| trace.event | `#3d7fc2` | `#8ab9e6` |
+
+`trace.api.bg`／`trace.event.bg` 仍存在于生产 token 中供兼容，浅色为 `#a7e5d3`／`#a8c8e8`，深色为 `#1e4a3f`／`#1f3550`。它们不再用作当前数据流行底。
+
+房间投影：
+
+```css
+/* 浅色 */
+0 1px 2px rgba(17,18,20,.04), 0 12px 32px -8px rgba(17,18,20,.12)
+/* 深色 */
+0 1px 2px rgba(0,0,0,.4), 0 12px 32px -8px rgba(0,0,0,.6)
 ```
 
-### Dark
-```
-canvas #0f1012  surface #141517  subtle #1b1c1f  code #1b1c1f  avEmpty #26272b
-lineSubtle #1f2024  line #2a2b2f  track #26272b  dash #3a3b40  dashStrong #4a4b52
-faint #5f6368  disabled #6b7079  mono2 #8b8f96  mono #a3a7ae  fg2 #a3a7ae
-fg #f2f2f3  ink #f2f2f3  onInk #111214
-success #3fb27f  danger #e5534b
-event #8b8bea  eventText #a3a3f0  eventLine #3d3d7a  eventBg #1c1c2e  apiBg #1b1c1f
-```
+只实现 comfortable 一档：
 
-### 数据流 wash 配色（Design System v1.1 定稿，覆盖上表的 event/apiBg）
-```
-light: trace.api #2fa98a / trace.api.bg #a7e5d3 / trace.event #3d7fc2 / trace.event.bg #a8c8e8
-dark:  trace.api #7fdcc3 / trace.api.bg #1e4a3f / trace.event #8ab9e6 / trace.event.bg #1f3550
-```
+| 项目 | 数值 px |
+| --- | --- |
+| fs / fsSm / h1 / h2 | 13 / 12 / 22 / 16 |
+| pad / padX / gap / rowP | 24 / 24 / 12 / 11 |
+| btnH / hdrH / avatar | 38 / 76 / 44 |
+| traceP / traceRowH | 14 / 70 |
+| sideW / tlW / panelW / railW / topbarH | 252 / 420 / 300 / 48 / 56 |
 
-### Density scale（三档，默认 comfortable）
-| token | compact | regular | comfortable |
-|---|---|---|---|
-| fs | 12 | 13 | 13 |
-| fsSm | 11 | 12 | 12 |
-| h1 | 17 | 19 | 22 |
-| h2 | 14 | 15 | 16 |
-| pad | 14 | 20 | 24 |
-| padX | 16 | 20 | 24 |
-| gap | 8 | 10 | 12 |
-| rowP | 7 | 9 | 11 |
-| btnH | 30 | 34 | 38 |
-| hdrH | 56 | 64 | 76 |
-| avatar | 36 | 40 | 44 |
-| traceP | 8 | 10 | 14 |
-| sideW | 220 | 236 | 252 |
-| tlW | 380 | 400 | 420 |
-| panelW | 260 | 280 | 300 |
+## 字体、边框与资源
 
-### Typography
-- UI 字体栈：`-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, sans-serif`
-- 等宽字体栈：`ui-monospace, "SF Mono", Menlo, Consolas, monospace`
-- **规则**：所有「机器可读」信息一律等宽——编号、时间戳、耗时、API 名、状态词、计数、TAG。
-  人类语言（标题、正文、按钮文案）用 UI 字体。
-- 字重只用 500 / 600 / 700。标题 letter-spacing `-.01em ~ -.03em`；等宽小字 `.04em ~ .1em`。
+UI 字体采用系统栈：`-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, sans-serif`。等宽栈为 `ui-monospace, "SF Mono", Menlo, Consolas, monospace`，用于编号、时间、耗时、API 名、机器状态词、计数与 TAG。字重为 500／600／700。
 
-### Radius / Border / Shadow
-- 圆角：卡片 10px，区块 8px，控件与行 6px，徽标 4px，pill 与主题按钮 999px/14px，头像 50%。
-- 边框恒为 1px；虚线仅用于"空/未占用"。
-- **不使用投影做层级**，唯一的 shadow 是呼吸发光（`0 0 12px rgba(ink,.20)`）与圆点的 3px 断线光圈。
+常规结构边框 1px；数据流类型左框 3px，选中 ring 和失败描边按组件定义。虚线表达空麦位；房间投影是明确允许的层级。圆角以生产组件为准：房间 8px、麦位 10px、常规控件与数据流 6px、角色与类型标签 3px、胶囊全圆、头像 50%。
 
-### Accent
-accent 为渐变可配置项（默认 `#f6a34a → #ee5a9a → #8b5cf6 → #38bdf8`），仅用于：左栏进度条、CTA 描边。**不用于正文、状态、按钮实心底**。
+品牌渐变为 `#f6a34a → #ee5a9a → #8b5cf6 → #38bdf8`，仅用于进度条和 Console CTA 描边。成功、危险与 API／EVENT 使用独立语义色。
 
-## Assets
-无外部图片或图标文件。所有图标为内联 SVG（24×24 viewBox，`currentColor`，stroke 1.5–2）：
-折叠/展开（面板图标）、✓、↗、+、皇冠（房主徽标）。头像为纯色圆 + 名称首字，接真实头像时替换为 `<img>` 并保持 50% 圆角。
+图标使用内联 SVG，通常为 24 × 24 viewBox 和 `currentColor`。标题路线／脉冲为 16px、stroke 1.8，皇冠为 22px 实心。无需新增图片资源，头像继续使用昵称首字素。
 
-## Files
-- `Lab.dc.html` — **主原型**（三栏框架 + 5 个视图 + 全部交互与两套主题）。这是实现时的第一参考。
-- `Design System.dc.html` — 设计系统 v1.1：色板、字体、组件清单与状态、动效规范。
-- `Redesign.dc.html` — 定稿方案对照页（Turn 4：4a–4e 浅色 / 4f–4j 深色，各 5 个视图）。用于确认视觉意图。
-- `Concept.dc.html` — 早期概念探索（仅作背景参考，不是定稿）。
-- `Trace Palettes.dc.html` — 数据流行配色的取舍过程，最终采用 wash 方案。
+## 状态与工程边界
 
-打开方式：直接用浏览器打开任一 `.dc.html`（需与同目录的 `support.js` 一起）。
-`Lab.dc.html` 顶栏可切换主题，左右栏可折叠，导航可切视图。
+原型支持本地昵称输入与进入视图、聊天追加、主题切换、侧栏和数据流筛选；新模拟 trace 出现在顶部。麦位治理、申请审批与公告等展示固定示例，部分按钮仅追加模拟 trace，不实现完整业务闭环。模拟时间和耗时不代表 SDK 实测结果，原型动作不作为产品功能验收。
+
+生产应用每个 Tab 一个角色和一个 RTM client；Storage 是房间权威状态，nickname 来自 Presence，消息通过 UID 关联显示名称。操作是否成功及退出清理由真实 API 结果和事件决定，不能统一改成“先乐观更新再校正”。Demo 的治理仍为客户端协作，不代表服务端强制权限。
+
+业务与协议细节继续以根 [AGENTS.md](../../AGENTS.md) 和 [语聊房说明](../../src/scenes/voice-room/README.md) 为准。本交接仅规定已确认的展示与交互，不改变真实房间生命周期。

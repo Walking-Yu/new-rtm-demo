@@ -79,12 +79,15 @@ describe('两类条目与图例', () => {
     expect(stylesSource).toContain('@keyframes lab-rowbreathe');
   });
 
-  it('有新条目时自动滚到时间线底部', () => {
+  it('有新条目时自动滚到顶部，最新记录排在第一条', () => {
     const { host } = setup();
+    host.record({ name: 'rtm.login', at: BASE });
     const body = screen.getByTestId('timeline-body');
     Object.defineProperty(body, 'scrollHeight', { configurable: true, value: 480 });
-    host.record({ name: 'rtm.subscribe' });
-    expect(body.scrollTop).toBe(480);
+    body.scrollTop = 240;
+    host.record({ name: 'rtm.subscribe', at: BASE + 1 });
+    expect(body.scrollTop).toBe(0);
+    expect(rows()[0]).toHaveTextContent('rtm.subscribe');
   });
 
   it('api 与 event 在首行显示类型标签，行内不再占用色点列', () => {
@@ -93,7 +96,7 @@ describe('两类条目与图例', () => {
     host.record({ name: 'message', kind: 'event' });
 
     const kinds = rows().map((row) => row.getAttribute('data-kind'));
-    expect(kinds).toEqual(['api', 'event']);
+    expect(kinds).toEqual(['event', 'api']);
     for (const row of rows()) {
       expect(row.querySelector('.lab-trace__kind')?.textContent).toBe(row.getAttribute('data-kind')?.toUpperCase());
       expect(row.querySelector('.lab-trace__dot')).toBeNull();
@@ -157,8 +160,8 @@ describe('两类条目与图例', () => {
     host.record({ name: 'storage', kind: 'event' });
 
     expect(rowTexts()).toEqual([
-      expect.stringContaining('linkState'),
       expect.stringContaining('storage'),
+      expect.stringContaining('linkState'),
     ]);
     await userEvent.setup().click(screen.getByRole('button', { name: '隐藏连接' }));
     expect(rowTexts()).toEqual([expect.stringContaining('storage')]);
@@ -176,14 +179,14 @@ describe('uid badge 配色', () => {
 
     const badges = screen.getAllByTestId('uid-badge');
     expect(badges.map((badge) => badge.textContent)).toEqual([
-      'host-aaa',
-      'host-aaa',
       'audience-bbb',
+      'host-aaa',
+      'host-aaa',
     ]);
 
     // 同角色两条的内联样式完全一致；跨角色必须不同。
-    expect(badges[0].getAttribute('style')).toBe(badges[1].getAttribute('style'));
-    expect(badges[0].getAttribute('style')).not.toBe(badges[2].getAttribute('style'));
+    expect(badges[1].getAttribute('style')).toBe(badges[2].getAttribute('style'));
+    expect(badges[1].getAttribute('style')).not.toBe(badges[0].getAttribute('style'));
   });
 
   it('颜色来自 roleColors 这一处来源，与主区身份条同源', () => {
@@ -192,9 +195,10 @@ describe('uid badge 配色', () => {
     audience.record({ name: 'rtm.login' });
 
     const badges = screen.getAllByTestId('uid-badge');
-    for (const [index, role] of ['host', 'audience'].entries()) {
+    for (const badge of badges) {
+      const role = badge.getAttribute('data-role')!;
       const { accent, soft } = roleColor(role);
-      const style = badges[index].getAttribute('style') ?? '';
+      const style = badge.getAttribute('style') ?? '';
       expect(style).toContain(accent);
       expect(style).toContain(soft);
     }
@@ -615,7 +619,7 @@ describe('外部 store 订阅，不轮询', () => {
     expect(rows()).toHaveLength(0);
   });
 
-  it('多端条目单列交错按时间排，不按端分栏', () => {
+  it('多端乱序记录按时间从新到旧交错展示，不改来源快照', () => {
     const host = endpoint('host-aaa', 'host');
     const audience = endpoint('audience-bbb', 'audience');
     const sources = [host.source, audience.source];
@@ -628,13 +632,34 @@ describe('外部 store 订阅，不轮询', () => {
       host.store.record({ at: BASE + 10, kind: 'api', name: 'host-early' });
     });
 
-    // 只有一个列表容器（不是每端一列），且顺序按时间戳。
+    // 只有一个列表容器（不是每端一列），展示次序以时间为准，不以写入时刻为准。
     expect(screen.getAllByRole('list')).toHaveLength(1);
     expect(rowTexts().map((text) => text.replace(/^[\d:.]+/, '').trim())).toEqual([
-      'APIhost-earlyhost-aaa',
-      'EVENTaudience-midaudience-bbb',
       'APIhost-latehost-aaa',
+      'EVENTaudience-midaudience-bbb',
+      'APIhost-earlyhost-aaa',
     ]);
+    expect(host.store.getEntries().map((entry) => entry.name)).toEqual(['host-late', 'host-early']);
+    expect(audience.store.getEntries().map((entry) => entry.name)).toEqual(['audience-mid']);
+  });
+
+  it('同毫秒先展示后记录的条目，筛选与恢复仍保持倒序', async () => {
+    const { host } = setup();
+    host.record({ name: 'first-call', kind: 'api' });
+    host.record({ name: 'middle-event', kind: 'event' });
+    host.record({ name: 'last-call', kind: 'api' });
+    const names = () => rows().map((row) => row.querySelector('.lab-trace__name')?.textContent);
+    expect(names()).toEqual(['last-call', 'middle-event', 'first-call']);
+    const body = screen.getByTestId('timeline-body');
+    body.scrollTop = 100;
+
+    const filter = screen.getByRole('button', { name: '调用 RTM API' });
+    await userEvent.setup().click(filter);
+    expect(names()).toEqual(['last-call', 'first-call']);
+    expect(body.scrollTop).toBe(0);
+    await userEvent.setup().click(filter);
+    expect(names()).toEqual(['last-call', 'middle-event', 'first-call']);
+    expect(host.store.getEntries().map((entry) => entry.name)).toEqual(['first-call', 'middle-event', 'last-call']);
   });
 
   it('页面 login 与角色 trace 共享 uid/seq 时仍使用不同 React key', () => {

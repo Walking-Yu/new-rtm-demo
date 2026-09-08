@@ -1,24 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import {
-  AudioLines,
-  Check,
-  ChevronDown,
-  CircleX,
-  ChevronLeft,
-  Crown,
-  DoorOpen,
-  LockKeyhole,
-  Mic,
-  MicOff,
-  Radio,
-  Search,
-  Send,
-  Sparkles,
-  Unplug,
-  Users,
-  Volume2,
-  X,
-} from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ClipboardEvent as ReactClipboardEvent } from "react";
+import { CircleX, LockKeyhole, Radio } from "lucide-react";
 
 import type { ResolvedEnv } from "../../app/env";
 import type { RtcHelper } from "../../shared/rtc";
@@ -30,9 +11,10 @@ import {
   type StorageLike,
 } from "./browser-room-directory";
 import { SEAT_COUNT } from "./config";
-import { AppRtmSession } from "./app-rtm";
+import { AppRtmSession, type AppRtmLinkState } from "./app-rtm";
 import { SingleRoomClient } from "./event-driven-single-room-client";
 import { normalizeRoomName } from "./room-name";
+import { getNicknameInitial, normalizeNicknameInput } from "./nickname";
 import { RoomEntryController } from "./room-entry-controller";
 import {
   createVoiceRoomUrl,
@@ -50,6 +32,8 @@ export interface VoiceRoomSceneProps {
   };
   onTraceSources?: (sources: readonly TraceSource[]) => void;
   onExperienceProgress?: (progress: ExperienceProgress | undefined) => void;
+  /** 页面级 RTM 连接状态，供外壳顶栏显示；场景卸载时上报 `undefined`。 */
+  onConnectionState?: (state: AppRtmLinkState | undefined) => void;
 }
 
 export const parseVoiceRoomUrl = parseVoiceRoomDataUrl;
@@ -84,93 +68,11 @@ function RoomCleanupNotice({ client, onDone }: { client: SingleRoomClient; onDon
   const [pending, setPending] = useState(false);
   return <div className="vr-entry__pending" role="alert">
     <span>“{client.getView().roomName}”已解散，数据清理未完成。</span>
-    <button type="button" className="vr-entry__secondary" disabled={pending} onClick={() => {
+    <button type="button" className="ink-button ink-button--small vr-entry__secondary" disabled={pending} onClick={() => {
       setPending(true);
       void client.retryRoomCleanup().then(onDone).catch(() => {}).finally(() => setPending(false));
     }}>{pending ? '正在清理…' : '重试清理'}</button>
   </div>;
-}
-
-function SearchableAudienceSelect({
-  options,
-  value,
-  onChange,
-}: {
-  options: readonly { value: string; label: string }[];
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const selectedLabel = options.find((option) => option.value === value)?.label ?? "";
-  const filtered = options.filter((option) =>
-    option.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
-  );
-
-  return (
-    <div
-      ref={rootRef}
-      className="vr-audience-select"
-      data-open={open}
-      onBlur={(event) => {
-        if (!rootRef.current?.contains(event.relatedTarget as Node | null)) setOpen(false);
-      }}
-    >
-      <Search size={14} aria-hidden="true" />
-      <input
-        role="combobox"
-        aria-label="选择邀请听众"
-        aria-expanded={open}
-        aria-controls="vr-audience-options"
-        aria-autocomplete="list"
-        autoComplete="off"
-        placeholder="搜索在线听众"
-        value={open ? query : selectedLabel}
-        onFocus={() => {
-          setQuery("");
-          setOpen(true);
-        }}
-        onClick={() => setOpen(true)}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          onChange("");
-          setOpen(true);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
-        }}
-      />
-      <ChevronDown size={14} aria-hidden="true" />
-      {open && (
-        <div id="vr-audience-options" className="vr-audience-select__options" role="listbox">
-          {filtered.length === 0 ? (
-            <p>没有匹配的在线听众</p>
-          ) : (
-            filtered.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="option"
-                aria-label={option.label}
-                aria-selected={option.value === value}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  onChange(option.value);
-                  setQuery(option.label);
-                  setOpen(false);
-                }}
-              >
-                <span>{option.label.slice(0, 1)}</span>
-                <strong>{option.label}</strong>
-                {option.value === value && <Check size={14} aria-hidden="true" />}
-              </button>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
 }
 
 /** @deprecated 仅供旧测试迁移；新入房流程由 RoomEntryController generation 守卫。 */
@@ -255,15 +157,97 @@ const CHAT_EMOJIS = [
   "💙", "💜", "🔥", "✨", "🎉", "🎁", "🌹", "☕", "🎵", "💯",
 ] as const;
 
-function VoiceRoomEnded({ message }: { message: string }) {
+/** 麦位序号：`seat-0` → 1（业务文案）与 `01`（等宽编号）。 */
+function seatOrdinal(seatId: string): number {
+  return Number(seatId.replace("seat-", "")) + 1;
+}
+
+function seatCode(seatId: string): string {
+  return String(seatOrdinal(seatId)).padStart(2, "0");
+}
+
+function CrownIcon() {
   return (
-    <section className="vr-entry vr-entry--status" data-testid="voice-room-ended">
-      <span className="vr-entry__status-icon"><CircleX size={24} aria-hidden="true" /></span>
-      <h2>{message}</h2>
-      <p>本次体验已结束，可以返回入口，通过房间名称加入其他房间。</p>
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 18h18l1-11-5.5 4L12 4l-4.5 7L2 7z" />
+    </svg>
+  );
+}
+
+function GiftIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="8" width="18" height="4" rx="1" /><path d="M12 8v13" /><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7" /><path d="M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5" />
+    </svg>
+  );
+}
+
+function HeartIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7z" />
+    </svg>
+  );
+}
+
+function MicIcon({ off = false }: { off?: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {off ? <>
+        <path d="M2 2l20 20" /><path d="M9 9v3a3 3 0 0 0 5.1 2.1" /><path d="M15 9.3V5a3 3 0 0 0-5.9-.7" /><path d="M5 10a7 7 0 0 0 11.5 5.4" /><path d="M19 10a7 7 0 0 1-.6 2.8" /><path d="M12 17v4" />
+      </> : <>
+        <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><path d="M12 17v4" />
+      </>}
+    </svg>
+  );
+}
+
+/** 入口、加载与结束页共用的卡片骨架：等宽眉标 + 标题 + 说明 + 操作。 */
+function StatusCard({
+  testId,
+  eyebrow,
+  title,
+  description,
+  tone = "default",
+  icon,
+  live,
+  role,
+  children,
+}: {
+  testId?: string;
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  tone?: "default" | "danger";
+  icon?: React.ReactNode;
+  live?: "polite";
+  role?: "status";
+  children?: React.ReactNode;
+}) {
+  return (
+    <section className="vr-entry vr-entry--status" data-testid={testId} aria-live={live} role={role}>
+      <div className="vr-entry__inner">
+        {icon && <span className="vr-entry__status-icon" data-tone={tone}>{icon}</span>}
+        {eyebrow && <span className="ink-eyebrow">{eyebrow}</span>}
+        <h2>{title}</h2>
+        {description && <p>{description}</p>}
+        {children}
+      </div>
     </section>
   );
 }
+
+function VoiceRoomEnded({ message, onBack }: { message: string; onBack: () => void }) {
+  return (
+    <StatusCard testId="voice-room-ended" eyebrow="ROOM ENDED" title={message} tone="danger"
+      description="本次体验已结束，可以返回入口，通过房间名称加入其他房间。"
+      icon={<CircleX size={20} aria-hidden="true" />}>
+      <button type="button" className="ink-button vr-entry__secondary" onClick={onBack}>返回房间入口</button>
+    </StatusCard>
+  );
+}
+
+type SeatMicState = "on" | "muted" | "forced" | "error" | "away";
 
 function RoomSurface({
   client,
@@ -282,9 +266,9 @@ function RoomSurface({
   );
   const [selectedSeatId, setSelectedSeatId] = useState("seat-1");
   const [chat, setChat] = useState("");
+  const chatEditVersion = useRef(0);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [announcement, setAnnouncement] = useState("");
-  const [inviteUserId, setInviteUserId] = useState("");
   const [transientError, setTransientError] = useState<string>();
   const [transientNotice, setTransientNotice] = useState<string>();
   const [actionPending, setActionPending] = useState(false);
@@ -299,6 +283,7 @@ function RoomSurface({
       (seat) => seat.userId === view.userId,
     ),
   );
+  const ownSeatId = Object.values(snapshot?.seats ?? {}).find((seat) => seat.userId === view.userId)?.seatId;
   const roomTitle = view.roomName;
   const roomAnnouncement = snapshot?.announcement.trim() || "暂无公告";
   // 入房到收到权威 Storage 快照之间也保留完整麦位布局；这只是展示占位，不进 store。
@@ -316,8 +301,13 @@ function RoomSurface({
     displayName: seat.userId ? client.getMemberDisplayName(seat.userId) : null,
     status: seat.userId ? "active" as const : "empty" as const,
   }));
+  const occupiedCount = displayedSeats.filter((seat) => seat.status === "active").length;
   const memberName = (userId: string) => client.getMemberDisplayName(userId);
   const audienceUserIds = view.onlineUsers.filter((userId) => userId !== view.userId);
+  const selectedSeat = snapshot?.seats[selectedSeatId];
+  const selectedMemberId = selectedSeat?.userId ?? undefined;
+  const forcedMutedSelf = Boolean(snapshot?.forcedMutedUserIds.includes(view.userId));
+  const seatRequestBlocked = !hasOwnSeat && view.hostTemporarilyAway;
 
   useEffect(() => {
     if (!view.error) return;
@@ -349,13 +339,18 @@ function RoomSurface({
     };
   }, [showEmojiPicker]);
 
+  const editChat = (value: string) => {
+    chatEditVersion.current += 1;
+    setChat(value);
+  };
+
   const insertEmoji = (emoji: string) => {
     const input = chatInputRef.current;
     const start = input?.selectionStart ?? chat.length;
     const end = input?.selectionEnd ?? start;
     const next = `${chat.slice(0, start)}${emoji}${chat.slice(end)}`;
     const caret = start + emoji.length;
-    setChat(next);
+    editChat(next);
     queueMicrotask(() => {
       input?.focus();
       input?.setSelectionRange(caret, caret);
@@ -367,13 +362,42 @@ function RoomSurface({
     if (feed) feed.scrollTop = feed.scrollHeight;
   }, [view.interactions]);
 
-  useLayoutEffect(() => {
-    const feed = chatFeedRef.current;
-    if (feed && view.invitation) feed.scrollTop = 0;
-  }, [view.invitation?.id]);
+  /** 麦位状态词与图标：只表达 Presence / Storage 派生的媒体状态，不改归属。 */
+  const describeSeat = (seat: (typeof displayedSeats)[number]) => {
+    const forcedMuted = Boolean(seat.userId && snapshot?.forcedMutedUserIds.includes(seat.userId));
+    const voluntarilyMuted = Boolean(seat.userId && view.memberMuted[seat.userId]);
+    const microphoneError = Boolean(seat.userId && view.memberMicrophoneErrors[seat.userId]);
+    const hostAway = Boolean(seat.userId && seat.userId === snapshot?.hostUserId && view.hostTemporarilyAway);
+    const muted = forcedMuted || voluntarilyMuted;
+    const isSpeaking = Boolean(
+      seat.userId && seat.status === "active" && !muted && !microphoneError && !hostAway &&
+      (view.volumes[seat.userId] ?? 0) >= 35,
+    );
+    const mic: SeatMicState = hostAway ? "away" : microphoneError ? "error" : forcedMuted ? "forced" : voluntarilyMuted ? "muted" : "on";
+    const label = hostAway ? "AWAY" : microphoneError ? "MIC ERROR" : forcedMuted ? "FORCED MUTED" : voluntarilyMuted ? "MUTED" : isSpeaking ? "SPEAKING" : "MIC ON";
+    const title = hostAway ? "房主暂时离开" : microphoneError ? "麦克风设备异常" : forcedMuted ? "已被强制静音" : voluntarilyMuted ? "已闭麦" : isSpeaking ? "正在说话" : "麦克风已开";
+    return { forcedMuted, voluntarilyMuted, microphoneError, hostAway, muted, isSpeaking, mic, label, title };
+  };
 
-  if (view.endedReason && dissolving) return <section className="vr-entry vr-entry--status" role="status"><Radio size={24} aria-hidden="true" /><h2>正在返回房间入口…</h2></section>;
-  if (view.endedReason) return <><VoiceRoomEnded message={view.endedReason} /><button type="button" className="vr-entry__secondary" onClick={onLeave}>返回房间入口</button></>;
+  /** 听众点击空麦位即申请该麦位；房主与不可申请的情况只做选中。 */
+  const onSeatClick = (seat: (typeof displayedSeats)[number]) => {
+    setSelectedSeatId(seat.seatId);
+    if (isHost || seat.status !== "empty" || hasOwnSeat || view.waitingSeatId || seatRequestBlocked) return;
+    void client.requestSeat(seat.seatId);
+  };
+
+  /** 邀请听众上麦：优先当前选中的空麦位，否则取第一个空麦位。 */
+  const inviteToSeat = (userId: string) => {
+    const target = snapshot?.seats[selectedSeatId]?.userId
+      ? displayedSeats.find((seat) => seat.status === "empty")?.seatId
+      : selectedSeatId;
+    if (!target) { setTransientError("没有空麦位可邀请"); return; }
+    void client.invite(userId, target);
+  };
+
+  if (view.endedReason && dissolving) return <StatusCard role="status" title="正在返回房间入口…" icon={<Radio size={20} aria-hidden="true" />} />;
+  if (view.endedReason) return <VoiceRoomEnded message={view.endedReason} onBack={onLeave} />;
+  const selected = selectedSeat?.userId ? describeSeat(displayedSeats.find((seat) => seat.seatId === selectedSeatId)!) : undefined;
   return (
     <section
       className="vr-single"
@@ -381,384 +405,145 @@ function RoomSurface({
       aria-label={isHost ? "房主语聊房" : "听众语聊房"}
     >
       <header className="vr-single__header">
-        <h2 className="vr-single__visually-hidden">{roomTitle}</h2>
         <div className="vr-single__identity">
-          <span className="vr-single__role-icon">
-            {isHost ? (
-              <Crown size={15} aria-hidden="true" />
-            ) : (
-              <Users size={15} aria-hidden="true" />
-            )}
-          </span>
-          <div className="vr-single__identity-copy">
-            <div className="vr-single__identity-meta">
-              <span className="vr-single__role-label">
-                {isHost ? "房主视角" : "听众视角"}
-              </span>
-              {!isHost && (
-                <span className="vr-single__nickname">{view.displayName}</span>
-              )}
-            </div>
-            <div className="vr-single__identity-main">
-              <strong className="vr-single__identity-title">{roomTitle}</strong>
-              <span
-                className="vr-single__identity-announcement"
-                title={roomAnnouncement}
-              >
-                {roomAnnouncement}
-              </span>
-            </div>
-          </div>
+          <span className="vr-single__role-badge">{isHost ? "HOST" : "AUDIENCE"}</span>
+          <h2 className="vr-single__title">{roomTitle}</h2>
         </div>
         <div className="vr-single__header-actions">
-          <button
-            type="button"
-            className="vr-single__leave"
-            title={isHost ? "暂时离开" : "退出房间"}
-            aria-label={isHost ? "暂时离开" : "退出房间"}
-            disabled={managing || actionPending}
-            onClick={onLeave}
-          >
-            <DoorOpen size={16} aria-hidden="true" />
-            <span>{isHost ? "暂时离开" : "退出"}</span>
-          </button>
-          {isHost && (
-            <button
-              type="button"
-              className="vr-single__leave vr-single__leave--danger"
-              title="解散房间"
-              aria-label="解散房间"
-              disabled={managing || actionPending}
-              onClick={() => { setActionPending(true); setDissolving(true); void onDissolve().finally(() => { setActionPending(false); setDissolving(false); }); }}
-            >
-              <CircleX size={16} aria-hidden="true" />
-              <span>解散</span>
-            </button>
+          {isHost ? (
+            <>
+              <button type="button" className="ink-button" aria-label="暂时离开" disabled={managing || actionPending} onClick={onLeave}>暂时离开</button>
+              <button
+                type="button"
+                className="ink-button ink-button--danger"
+                aria-label="解散房间"
+                disabled={managing || actionPending}
+                onClick={() => { setActionPending(true); setDissolving(true); void onDissolve().finally(() => { setActionPending(false); setDissolving(false); }); }}
+              >
+                解散房间
+              </button>
+            </>
+          ) : (
+            <button type="button" className="ink-button" aria-label="退出房间" disabled={managing || actionPending} onClick={onLeave}>退出房间</button>
           )}
         </div>
       </header>
-      <div className="vr-single__state">
-        <span className="vr-single__connection" data-state={view.linkState}>
-          <i aria-hidden="true" />
-          <span>房间连接状态：</span>
-          <strong>{view.linkState}</strong>
-        </span>
-      </div>
       <VoiceRoomToast
         message={transientError ?? transientNotice}
         tone={transientError ? "error" : "default"}
       />
-      <section className="vr-single__seats" aria-label="麦位">
+      <div className="vr-single__stage">
         <div className="vr-single__section-heading">
           <div>
-            <span>{isHost ? "麦位管理" : "房间麦位"}</span>
-            <strong>
-              {
-                Object.values(snapshot?.seats ?? {}).filter(
-                  (seat) => seat.userId !== null,
-                ).length
-              }
-              /8
-            </strong>
+            <span>麦位</span>
+            <span className="vr-single__meta">{occupiedCount} / {SEAT_COUNT} · {view.onlineUsers.length} ONLINE</span>
           </div>
-          <small>
-            {view.onlineUsers.length} 人在线 · {isHost ? "选择麦位管理嘉宾" : "选择空麦位申请上麦"}
-          </small>
+          <small>{isHost ? "选择麦位以管理嘉宾" : "选择空麦位申请上麦"}</small>
         </div>
-        {displayedSeats.map((seat) => {
-          const forcedMuted = Boolean(
-            seat.userId && snapshot?.forcedMutedUserIds.includes(seat.userId),
-          );
-          const voluntarilyMuted = Boolean(
-            seat.userId && view.memberMuted[seat.userId],
-          );
-          const muted = forcedMuted || voluntarilyMuted;
-          const microphoneError = Boolean(
-            seat.userId && view.memberMicrophoneErrors[seat.userId],
-          );
-          const hostAway = Boolean(
-            seat.userId === snapshot?.hostUserId && view.hostTemporarilyAway,
-          );
-          const isSpeaking = Boolean(
-            seat.userId &&
-              seat.status === "active" &&
-              !muted &&
-              !microphoneError &&
-              !hostAway &&
-              (view.volumes[seat.userId] ?? 0) >= 35,
-          );
-          return (
-            <button
-              key={seat.seatId}
-              type="button"
-              className="vr-single__seat"
-              data-selected={selectedSeatId === seat.seatId}
-              data-state={seat.status}
-              data-muted={muted}
-              data-forced-muted={forcedMuted}
-              data-microphone-error={microphoneError}
-              data-host-away={hostAway}
-              data-speaking={isSpeaking}
-              onClick={() => setSelectedSeatId(seat.seatId)}
-            >
-              <span className="vr-single__seat-number">
-                {Number(seat.seatId.replace("seat-", "")) + 1}
-              </span>
-              <span className="vr-single__seat-avatar" aria-hidden="true">
-                {seat.displayName?.slice(0, 1) ?? "+"}
-              </span>
-              <strong>{seat.displayName ?? "空麦位"}</strong>
-              <small>
-                {seat.status === "active"
-                  ? hostAway
-                    ? "暂时离开…"
-                    : microphoneError
-                    ? "麦克风异常"
-                    : isSpeaking
-                    ? "正在说话"
-                    : forcedMuted
-                    ? "强制静音"
-                    : voluntarilyMuted
-                    ? "已闭麦"
-                    : "已开麦"
-                  : "可申请"}
-              </small>
-              {seat.status === "active" && (
-                <span
-                  className="vr-single__seat-mic"
-                  title={
-                    hostAway
-                      ? "房主暂时离开"
-                      : microphoneError
-                      ? "麦克风设备异常"
-                      : forcedMuted
-                      ? "已被强制静音"
-                      : voluntarilyMuted
-                      ? "已闭麦"
-                      : isSpeaking
-                      ? "正在说话"
-                      : "麦克风已开"
-                  }
-                >
-                  {hostAway ? (
-                    <DoorOpen size={14} aria-hidden="true" />
-                  ) : microphoneError ? (
-                    <Unplug size={14} aria-hidden="true" />
-                  ) : muted ? (
-                    <MicOff size={14} aria-hidden="true" />
-                  ) : isSpeaking ? (
-                    <AudioLines size={14} aria-hidden="true" />
-                  ) : (
-                    <Mic size={14} aria-hidden="true" />
-                  )}
+        <section className="vr-single__seats" aria-label="麦位">
+          {displayedSeats.map((seat) => {
+            const info = describeSeat(seat);
+            const isHostSeat = Boolean(seat.userId && seat.userId === snapshot?.hostUserId);
+            const waiting = !isHost && view.waitingSeatId === seat.seatId;
+            const invited = !isHost && view.invitation?.seatId === seat.seatId;
+            const emptyLabel = waiting ? "WAITING" : invited ? "INVITED" : "OPEN";
+            return (
+              <button
+                key={seat.seatId}
+                type="button"
+                className="vr-single__seat"
+                data-selected={selectedSeatId === seat.seatId}
+                data-state={seat.status}
+                data-mic={seat.status === "active" ? info.mic : undefined}
+                data-muted={info.muted}
+                data-forced-muted={info.forcedMuted}
+                data-microphone-error={info.microphoneError}
+                data-host-away={info.hostAway}
+                data-speaking={info.isSpeaking}
+                data-waiting={waiting}
+                data-invited={invited}
+                aria-label={seat.status === "active"
+                  ? `${seatOrdinal(seat.seatId)} 号麦位 ${seat.displayName} ${info.title}`
+                  : `${seatOrdinal(seat.seatId)} 号麦位 空麦位`}
+                onClick={() => onSeatClick(seat)}
+              >
+                {isHostSeat ? (
+                  <span className="vr-single__seat-host" role="img" aria-label="房主" title="房主"><CrownIcon /></span>
+                ) : (
+                  <span className="vr-single__seat-number">{seatCode(seat.seatId)}</span>
+                )}
+                <span className="vr-single__seat-avatar" aria-hidden="true">
+                  {getNicknameInitial(seat.displayName)}
                 </span>
-              )}
-            </button>
-          );
-        })}
-      </section>
-      {isHost ? (
-        <section className="vr-single__panel" aria-label="房间控制台">
-          <div className="vr-single__panel-title">
-            <div>
-              <h3>房间管理</h3>
-              <span>公告、排麦与成员治理</span>
-            </div>
-            <span className="vr-single__count">{view.queue.length} 个申请</span>
-          </div>
-          <div className="vr-single__control-group">
-            <label className="vr-single__field">
-              <span>房间公告</span>
-              <div>
-                <input
-                  placeholder="写一句欢迎语…"
-                  value={announcement}
-                  onChange={(event) => setAnnouncement(event.target.value)}
-                />
-                <button
-                  type="button"
-                  onClick={() => void client.updateAnnouncement(announcement)}
-                >
-                  发布
-                </button>
-              </div>
-            </label>
-          </div>
-          <div className="vr-single__control-group">
-            <label className="vr-single__field">
-              <span>邀请听众</span>
-              <div>
-                <SearchableAudienceSelect
-                  value={inviteUserId}
-                  onChange={setInviteUserId}
-                  options={audienceUserIds.map((userId) => ({
-                    value: userId,
-                    label: memberName(userId),
-                  }))}
-                />
-                <button
-                  type="button"
-                  disabled={!inviteUserId.trim()}
-                  onClick={() =>
-                    void client.invite(inviteUserId.trim(), selectedSeatId)
-                  }
-                >
-                  邀请
-                </button>
-              </div>
-            </label>
-          </div>
-          <div className="vr-single__control-group">
-              <div className="vr-single__control-heading">
-                <span>排麦申请</span>
-                <small>{view.queue.length} 人等待</small>
-            </div>
-            <div className="vr-single__request-list">
-              {view.queue.length === 0 ? (
-                <div className="vr-single__empty">
-                  <Sparkles size={18} aria-hidden="true" />
-                  <p>暂时没有排麦申请</p>
-                  <small>有人申请后会显示在这里</small>
-                </div>
-              ) : (
-                view.queue.map((request) => (
-                  <article key={request.id} className="vr-single__request">
-                    <span className="vr-single__request-avatar">
-                      {request.displayName.slice(0, 1)}
-                    </span>
-                    <div>
-                      <strong>{request.displayName}</strong>
-                      <small>
-                        申请 {Number(request.seatId.replace("seat-", "")) + 1}{" "}
-                        号麦位 · 剩余 {request.remainingSeconds} 秒
-                      </small>
-                    </div>
-                    <div className="vr-single__request-actions">
-                      <button
-                        type="button"
-                        aria-label={`同意${request.displayName}上麦`}
-                        onClick={() => void client.approveSeatRequest(request.id)}
-                      >
-                        <Check size={15} aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`拒绝${request.displayName}上麦`}
-                        onClick={() => void client.rejectSeatRequest(request.id)}
-                      >
-                        <X size={15} aria-hidden="true" />
-                      </button>
-                    </div>
-                  </article>
-                ))
-              )}
-            </div>
-          </div>
-          {snapshot?.seats[selectedSeatId]?.userId &&
-            snapshot.seats[selectedSeatId].userId !== view.userId && (
-              <div className="vr-single__member-actions">
-                <span>
-                  已选择 {memberName(snapshot.seats[selectedSeatId].userId!)}
-                  {" · "}{Number(selectedSeatId.replace("seat-", "")) + 1} 号麦位
+                <span className="vr-single__seat-copy">
+                  <strong>{seat.displayName ?? "空麦位"}</strong>
+                  <small>{seat.status === "active" ? info.label : emptyLabel}</small>
                 </span>
-                <div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void client.forceMute(
-                        snapshot.seats[selectedSeatId].userId!,
-                        !snapshot.forcedMutedUserIds.includes(
-                          snapshot.seats[selectedSeatId].userId!,
-                        ),
-                      )
-                    }
-                  >
-                    {snapshot.forcedMutedUserIds.includes(
-                      snapshot.seats[selectedSeatId].userId!,
-                    )
-                      ? "解除静音"
-                      : "静音"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void client.forceLeave(
-                        snapshot.seats[selectedSeatId].userId!,
-                      )
-                    }
-                  >
-                    下麦
-                  </button>
-                </div>
-              </div>
-            )}
-          <div className="vr-single__control-group vr-single__members-group">
-            <section className="vr-single__member-list" aria-label="房间成员管理">
-              <div className="vr-single__control-heading">
-                <span>在线观众</span>
-                <small>{Math.max(0, view.onlineUsers.length - 1)} 人</small>
-              </div>
-              {audienceUserIds.map((userId) => (
-                <article key={userId} className="vr-single__member-row">
-                  <strong>{memberName(userId)}</strong>
-                  <span className="vr-single__member-row-actions">
-                    <button type="button" aria-label={`踢出${memberName(userId)}`} onClick={() => void client.kickMember(userId)}>踢出</button>
-                    <button type="button" aria-label={`封禁${memberName(userId)}`} className="vr-single__danger" disabled={managing || actionPending} onClick={() => { setActionPending(true); void client.banMember(userId).catch(error => setTransientError(error instanceof Error ? error.message : "封禁同步失败，请重试")).finally(() => setActionPending(false)); }}>封禁</button>
+                {seat.status === "active" && (
+                  <span className="vr-single__seat-mic" title={info.title}>
+                    <MicIcon off={info.muted || info.microphoneError || info.hostAway} />
                   </span>
-                </article>
-              ))}
-            </section>
+                )}
+              </button>
+            );
+          })}
+        </section>
+        <div className="vr-single__section-heading vr-single__section-heading--divided">
+          <div><span>公告</span><span className="vr-single__meta">PINNED</span></div>
+        </div>
+        <p className="vr-single__announcement" title={roomAnnouncement}>{roomAnnouncement}</p>
+        <div className="vr-single__section-heading vr-single__section-heading--divided">
+          <div><span>公屏</span><span className="vr-single__meta">{view.interactions.length} MESSAGES</span></div>
+        </div>
+        <section className="vr-single__chat" aria-label="互动消息">
+          <div className="vr-single__chat-feed" ref={chatFeedRef} data-testid="voice-room-chat-feed" tabIndex={0} role="region" aria-label="公屏消息，可上下滚动">
+            {view.interactions.length === 0 ? (
+              <p className="vr-single__chat-empty">和大家打个招呼，开始互动吧</p>
+            ) : (
+              view.interactions.map((item) => (
+                <p
+                  key={item.id}
+                  className={item.type.startsWith("system-") ? "vr-single__system-message" : undefined}
+                  data-interaction-type={item.type}
+                >
+                  {item.type.startsWith("system-") ? (
+                    <span>{item.value}</span>
+                  ) : (
+                    <>
+                      <strong>{item.displayName}</strong>
+                      <span>
+                        {item.type === "gift"
+                          ? ` 送出礼物 ${item.value}`
+                          : item.type === "emoji"
+                            ? ` 送出爱心 ${item.value}`
+                            : ` ${item.value}`}
+                      </span>
+                    </>
+                  )}
+                </p>
+              ))
+            )}
           </div>
         </section>
-      ) : null}
-      <section className="vr-single__chat" aria-label="互动消息">
-        <div className="vr-single__chat-feed" ref={chatFeedRef} data-testid="voice-room-chat-feed">
-          {!isHost && view.invitation && (
-            <div className="vr-single__inline-invitation" role="status">
-              <span>房主邀请你上 {Number(view.invitation.seatId.replace("seat-", "")) + 1} 号麦</span>
-              <button type="button" onClick={() => void client.acceptInvitation()}>接受</button>
-              <button type="button" onClick={() => void client.rejectInvitation()}>拒绝</button>
-            </div>
-          )}
-          {view.interactions.length === 0 ? (
-            <p className="vr-single__chat-empty">和大家打个招呼，开始互动吧</p>
-          ) : (
-            view.interactions.map((item) => (
-              <p
-                key={item.id}
-                className={item.type.startsWith("system-") ? "vr-single__system-message" : undefined}
-                data-interaction-type={item.type}
-              >
-                {item.type.startsWith("system-") ? (
-                  <span>{item.value}</span>
-                ) : (
-                  <>
-                    <strong>{item.displayName}</strong>
-                    <span>
-                      {item.type === "gift"
-                        ? ` 送出礼物 ${item.value}`
-                        : item.type === "emoji"
-                          ? ` 送出爱心 ${item.value}`
-                          : ` ${item.value}`}
-                    </span>
-                  </>
-                )}
-              </p>
-            ))
-          )}
-        </div>
+      </div>
+      <div className="vr-single__composer">
         <form
           onSubmit={(event) => {
             event.preventDefault();
+            const sentEditVersion = chatEditVersion.current;
             void client
               .sendInteraction("chat.message", chat)
-              .then(() => setChat(""));
+              .then(() => {
+                // Re-entering the same text still creates a new draft.
+                if (chatEditVersion.current === sentEditVersion) setChat("");
+              })
+              .catch((error) => setTransientError(error instanceof Error ? error.message : "聊天发送失败，请重试"));
           }}
         >
           <div className="vr-single__emoji-control" ref={emojiPickerRef}>
             <button
               type="button"
-              className="vr-single__quick-action"
+              className="ink-button ink-button--icon vr-single__quick-action"
               aria-label={showEmojiPicker ? "关闭 Emoji 选择器" : "打开 Emoji 选择器"}
               aria-expanded={showEmojiPicker}
               title="Emoji"
@@ -784,65 +569,191 @@ function RoomSurface({
           </div>
           <button
             type="button"
-            className="vr-single__quick-action"
+            className="ink-button ink-button--icon vr-single__quick-action"
             aria-label="发送礼物消息"
-            title="发送礼物消息"
+            title="送礼物"
             onClick={() => void client.sendInteraction("gift.sent", "🎁")}
           >
-            🎁
+            <GiftIcon />
           </button>
           <button
             type="button"
-            className="vr-single__quick-action"
+            className="ink-button ink-button--icon vr-single__quick-action"
             aria-label="发送爱心消息"
-            title="发送爱心消息"
+            title="点赞"
             onClick={() => void client.sendInteraction("emoji.reaction", "❤️")}
           >
-            ❤️
+            <HeartIcon />
           </button>
           <input
             ref={chatInputRef}
+            className="ink-input"
             aria-label="聊天内容"
             placeholder="说点什么…"
             value={chat}
-            onChange={(event) => setChat(event.target.value)}
+            onChange={(event) => editChat(event.target.value)}
           />
-          <button type="submit" aria-label="发送聊天" disabled={!chat.trim()}>
-            <Send size={15} aria-hidden="true" />
+          <button type="submit" className="ink-button ink-button--primary" aria-label="发送聊天" disabled={!chat.trim()}>
+            发送
           </button>
           {hasOwnSeat && (
             <button
               type="button"
-              className="vr-single__mic-action"
-              disabled={Boolean(snapshot?.forcedMutedUserIds.includes(view.userId))}
+              className="ink-button vr-single__mic-action"
+              disabled={forcedMutedSelf}
               onClick={() => void client.setOwnMuted(!view.ownMuted)}
             >
-              {snapshot?.forcedMutedUserIds.includes(view.userId)
-                ? "已被静音"
-                : view.ownMuted ? "开麦" : "闭麦"}
+              {forcedMutedSelf ? "已被静音" : view.ownMuted ? "开麦" : "闭麦"}
             </button>
           )}
-          {!isHost && (
-              <button
-                type="button"
-                className="vr-single__seat-action"
-                disabled={Boolean(view.waitingSeatId) || (!hasOwnSeat && view.hostTemporarilyAway)}
-                title={!hasOwnSeat && view.hostTemporarilyAway
-                  ? "房主暂时离开，无法处理上麦申请"
-                  : undefined}
-                onClick={() => {
-                  if (hasOwnSeat) void client.leaveSeat();
-                  else void client.requestSeat(selectedSeatId);
-                }}
-              >
-                {hasOwnSeat ? "主动下麦" : view.waitingSeatId ? "等待审批" : "申请上麦"}
-              </button>
-          )}
+          {!isHost && (hasOwnSeat ? (
+            <button type="button" className="ink-button vr-single__seat-action" onClick={() => void client.leaveSeat()}>
+              下麦
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="ink-button ink-button--outline vr-single__seat-action"
+              disabled={Boolean(view.waitingSeatId) || seatRequestBlocked}
+              title={seatRequestBlocked ? "房主暂时离开，无法处理上麦申请" : undefined}
+              onClick={() => void client.requestSeat(selectedSeatId)}
+            >
+              {view.waitingSeatId ? "等待审批" : "申请上麦"}
+            </button>
+          ))}
         </form>
-      </section>
+      </div>
+      {isHost ? (
+        <aside className="vr-single__panel" aria-label="房间控制台">
+          {selectedSeat?.userId && selected && (
+            <section className="vr-single__control-group vr-single__context-card">
+              <header>
+                <span>已选 · {seatCode(selectedSeatId)} {memberName(selectedSeat.userId)}</span>
+                <span className="vr-single__context-state" data-tone={selected.mic === "on" ? "success" : undefined}>{selected.label}</span>
+              </header>
+              {selectedMemberId && selectedMemberId !== view.userId ? (
+                <div className="vr-single__context-actions">
+                  <button type="button" className="ink-button" onClick={() => void client.forceMute(selectedMemberId, !selected.forcedMuted)}>
+                    {selected.forcedMuted ? "解除静音" : "静音"}
+                  </button>
+                  <button type="button" className="ink-button" onClick={() => void client.forceLeave(selectedMemberId)}>下麦</button>
+                  <button type="button" className="ink-button ink-button--danger" aria-label={`踢出${memberName(selectedMemberId)}`} onClick={() => void client.kickMember(selectedMemberId)}>踢出</button>
+                </div>
+              ) : (
+                <p className="vr-single__empty">这是你的麦位，可在底部输入条闭麦或开麦。</p>
+              )}
+            </section>
+          )}
+          <section className="vr-single__control-group">
+            <div className="vr-single__control-heading">
+              <span>排麦申请</span>
+              <small>{view.queue.length} 等待</small>
+            </div>
+            <div className="vr-single__request-list">
+              {view.queue.length === 0 ? (
+                <p className="vr-single__empty">暂时没有排麦申请，有人申请后会显示在这里</p>
+              ) : (
+                view.queue.map((request) => (
+                  <article key={request.id} className="vr-single__request">
+                    <div>
+                      <strong>{request.displayName}</strong>
+                      <small>→ SEAT {seatCode(request.seatId)} · {request.remainingSeconds}s</small>
+                    </div>
+                    <div className="vr-single__request-actions">
+                      <button
+                        type="button"
+                        className="ink-button ink-button--primary ink-button--small"
+                        aria-label={`同意${request.displayName}上麦`}
+                        onClick={() => void client.approveSeatRequest(request.id)}
+                      >
+                        同意
+                      </button>
+                      <button
+                        type="button"
+                        className="ink-button ink-button--small"
+                        aria-label={`拒绝${request.displayName}上麦`}
+                        onClick={() => void client.rejectSeatRequest(request.id)}
+                      >
+                        拒绝
+                      </button>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
+          <section className="vr-single__control-group">
+            <div className="vr-single__control-heading"><span>更新公告</span></div>
+            <div className="vr-single__field">
+              <input
+                className="ink-input"
+                aria-label="房间公告"
+                placeholder="写一句欢迎语…"
+                value={announcement}
+                onChange={(event) => setAnnouncement(event.target.value)}
+              />
+              <button type="button" className="ink-button ink-button--primary" onClick={() => void client.updateAnnouncement(announcement)}>
+                发布
+              </button>
+            </div>
+          </section>
+          <section className="vr-single__control-group vr-single__member-list" aria-label="房间成员管理">
+            <div className="vr-single__control-heading">
+              <span>在线听众</span>
+              <small>{audienceUserIds.length}</small>
+            </div>
+            {audienceUserIds.length === 0 && <p className="vr-single__empty">还没有听众加入</p>}
+            {audienceUserIds.map((userId) => (
+              <article key={userId} className="vr-single__member-row">
+                <span>{memberName(userId)}</span>
+                <span className="vr-single__member-row-actions">
+                  <button type="button" className="ink-text-link" aria-label={`邀请${memberName(userId)}上麦`} onClick={() => inviteToSeat(userId)}>邀请上麦</button>
+                  <button type="button" className="ink-text-link ink-text-link--danger vr-single__danger" aria-label={`封禁${memberName(userId)}`} disabled={managing || actionPending} onClick={() => { setActionPending(true); void client.banMember(userId).catch(error => setTransientError(error instanceof Error ? error.message : "封禁同步失败，请重试")).finally(() => setActionPending(false)); }}>封禁</button>
+                </span>
+              </article>
+            ))}
+          </section>
+        </aside>
+      ) : (
+        <aside className="vr-single__panel" aria-label="我的状态">
+          {view.invitation && (
+            <section className="vr-single__control-group vr-single__context-card vr-single__inline-invitation" role="status">
+              <header>
+                <span>房主邀请你上麦</span>
+                <span className="vr-single__context-state">SEAT {seatCode(view.invitation.seatId)}</span>
+              </header>
+              <div className="vr-single__context-actions vr-single__context-actions--two">
+                <button type="button" className="ink-button ink-button--primary" onClick={() => void client.acceptInvitation()}>接受</button>
+                <button type="button" className="ink-button" onClick={() => void client.rejectInvitation()}>拒绝</button>
+              </div>
+            </section>
+          )}
+          <section className="vr-single__control-group">
+            <div className="vr-single__control-heading"><span>我的状态</span></div>
+            <div className="vr-single__status-row"><span>身份</span><span className="vr-single__status-value">AUDIENCE</span></div>
+            <div className="vr-single__status-row"><span>昵称</span><span className="vr-single__status-value vr-single__status-value--text vr-single__nickname">{view.displayName}</span></div>
+            <div className="vr-single__status-row">
+              <span>{hasOwnSeat ? "麦位" : "申请中"}</span>
+              <span className={`vr-single__status-value ${hasOwnSeat || view.waitingSeatId ? "" : "vr-single__status-value--muted"}`}>
+                {ownSeatId ? `SEAT ${seatCode(ownSeatId)}` : view.waitingSeatId ? `SEAT ${seatCode(view.waitingSeatId)}` : "—"}
+              </span>
+            </div>
+          </section>
+          <section className="vr-single__control-group">
+            <div className="vr-single__control-heading">
+              <span>在线听众</span>
+              <small>{audienceUserIds.filter((userId) => userId !== snapshot?.hostUserId).length}</small>
+            </div>
+            {audienceUserIds.filter((userId) => userId !== snapshot?.hostUserId).map((userId) => (
+              <article key={userId} className="vr-single__member-row"><span>{memberName(userId)}</span></article>
+            ))}
+          </section>
+        </aside>
+      )}
     </section>
   );
 }
+
 
 /* 迁移期保留的旧页面实现；48 号票在新路径全量验收后清理。
 export function LegacyVoiceRoomScene({
@@ -1259,12 +1170,14 @@ export function LegacyVoiceRoomScene({
 }
 */
 
+
 export function VoiceRoomScene({
   env,
   search = window.location.search,
   overrides,
   onTraceSources,
   onExperienceProgress,
+  onConnectionState,
 }: VoiceRoomSceneProps) {
   const directPayload = useMemo(() => parseVoiceRoomDataUrl(search), [search]);
   const pageUid = directPayload?.pageUid ?? randomId("user");
@@ -1299,6 +1212,10 @@ export function VoiceRoomScene({
   const [loginAttempt, setLoginAttempt] = useState(0);
   const [roomName, setRoomName] = useState("");
   const [joinName, setJoinName] = useState("");
+  const [hostNickname, setHostNickname] = useState(() => directPayload?.role === "host" ? directPayload.nickname ?? "" : "");
+  const [audienceNickname, setAudienceNickname] = useState(() => directPayload?.role === "audience" ? directPayload.nickname ?? "" : "");
+  const [hostNicknamePasteError, setHostNicknamePasteError] = useState<string>();
+  const [audienceNicknamePasteError, setAudienceNicknamePasteError] = useState<string>();
   const [cleanupFailures, setCleanupFailures] = useState<SingleRoomClient[]>([]);
   const [toast, setToast] = useState<string>();
   const directStarted = useRef(false);
@@ -1335,6 +1252,15 @@ export function VoiceRoomScene({
       setToast(error instanceof Error ? error.message : "加入房间失败");
     });
   }, [bootState, controller, directPayload]);
+
+  // 页面级 linkState 由应用级 listener 记录为 trace；订阅 trace 变化即可跟随连接状态，不轮询。
+  const linkState = useSyncExternalStore(
+    (listener) => appRtm.subscribeTraces(listener),
+    () => appRtm.getCurrentLinkState(),
+  );
+  const connectionState: AppRtmLinkState = bootState === "booting" && linkState === "disconnected" ? "connecting" : linkState;
+  useEffect(() => { onConnectionState?.(connectionState); }, [connectionState, onConnectionState]);
+  useEffect(() => () => onConnectionState?.(undefined), [onConnectionState]);
 
   const client = entryView.client;
   const experienceProgress = useVoiceRoomExperienceProgress(appRtm, client, entryView.phase === "room");
@@ -1376,27 +1302,22 @@ export function VoiceRoomScene({
 
   if (bootState === "booting") {
     return (
-      <section className="vr-entry vr-entry--status" aria-live="polite" data-testid="voice-room-booting">
-        <span className="vr-entry__status-icon"><Radio size={24} aria-hidden="true" /></span>
-        <h2>正在初始化 RTM…</h2>
-        <p>完成登录后即可选择房主或听众流程。</p>
-      </section>
+      <StatusCard testId="voice-room-booting" live="polite" eyebrow="CONNECTING" title="正在初始化 RTM…"
+        description="完成登录后即可创建或加入房间。" icon={<Radio size={20} aria-hidden="true" />} />
     );
   }
 
   if (bootState === "error") {
     return (
-      <section className="vr-entry vr-entry--status" data-testid="voice-room-boot-error">
-        <span className="vr-entry__status-icon"><CircleX size={24} aria-hidden="true" /></span>
-        <h2>RTM 登录失败</h2>
-        <p>{bootError}</p>
-        <button type="button" className="vr-entry__primary" onClick={() => setLoginAttempt((value) => value + 1)}>重新登录</button>
-      </section>
+      <StatusCard testId="voice-room-boot-error" eyebrow="LOGIN FAILED" tone="danger" title="RTM 登录失败" description={bootError}
+        icon={<CircleX size={20} aria-hidden="true" />}>
+        <button type="button" className="ink-button ink-button--primary vr-entry__primary" onClick={() => setLoginAttempt((value) => value + 1)}>重新登录</button>
+      </StatusCard>
     );
   }
 
   if (entryView.phase === "ended") {
-    return <><VoiceRoomEnded message={entryView.error ?? "房间已结束"} /><button type="button" className="vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>返回房间入口</button></>;
+    return <VoiceRoomEnded message={entryView.error ?? "房间已结束"} onBack={() => { void controller.leaveRoom(); }} />;
   }
 
   if (client && (entryView.phase === "subscribing" || entryView.phase === "room")) {
@@ -1432,12 +1353,12 @@ export function VoiceRoomScene({
         </div>
         {entryView.phase === "subscribing" && (
           <div className="vr-room-loading" role="status" aria-live="polite" data-testid="voice-room-loading-overlay">
-            <Radio size={24} aria-hidden="true" />
+            <Radio size={20} aria-hidden="true" />
             <strong>{entryView.statusText ?? '正在加载房间…'}</strong>
-            <button type="button" className="vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>取消</button>
+            <button type="button" className="ink-button ink-button--small vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>取消</button>
           </div>
         )}
-        {entryView.directoryConnected === false && entryView.phase === 'room' && <div className="vr-room-loading" role="status"><strong>连接中断，正在确认房间状态…</strong><button type="button" onClick={() => { void controller.leaveRoom(); }}>返回入口</button></div>}
+        {entryView.directoryConnected === false && entryView.phase === 'room' && <div className="vr-room-loading" role="status"><strong>连接中断，正在确认房间状态…</strong><button type="button" className="ink-button ink-button--small" onClick={() => { void controller.leaveRoom(); }}>返回入口</button></div>}
         {entryView.managing && <p className="vr-entry__pending" role="status">正在同步房间状态…</p>}
         <VoiceRoomToast message={toast} tone="error" />
       </section>
@@ -1450,36 +1371,88 @@ export function VoiceRoomScene({
     try { normalizeRoomName(value); return undefined; } catch (error) { return (error as Error).message; }
   };
   const createError = nameError(roomName), joinError = nameError(joinName);
+  const nicknameError = (value: string) => {
+    try { normalizeNicknameInput(value); return undefined; } catch (error) { return (error as Error).message; }
+  };
+  const hostNicknameError = hostNicknamePasteError ?? nicknameError(hostNickname);
+  const audienceNicknameError = audienceNicknamePasteError ?? nicknameError(audienceNickname);
+  const canCreate = !pending && !!roomName.trim() && !createError && !hostNicknameError;
+  const canJoin = !pending && !!joinName.trim() && !joinError && !audienceNicknameError;
   const reportFailure = (error: unknown) => setToast(error instanceof Error ? error.message : '房间操作失败，请重试');
-  const joinByName = () => { setToast(undefined); void controller.joinAudienceByName(joinName).catch(reportFailure); };
+  const createByName = () => {
+    if (!canCreate) return;
+    setToast(undefined);
+    void controller.createHostRoom({ roomName, nickname: hostNickname }).catch(reportFailure);
+  };
+  const joinByName = () => {
+    if (!canJoin) return;
+    setToast(undefined);
+    void controller.joinAudienceByName(joinName, audienceNickname).catch(reportFailure);
+  };
+  const submitOnEnter = (event: ReactKeyboardEvent<HTMLInputElement>, submit: () => void) => {
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    event.preventDefault();
+    submit();
+  };
+  const pasteNickname = (event: ReactClipboardEvent<HTMLInputElement>, setError: (error: string | undefined) => void) => {
+    const input = event.currentTarget;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const candidate = input.value.slice(0, start) + event.clipboardData.getData('text/plain') + input.value.slice(end);
+    try {
+      // Validate before a text input strips pasted CR/LF; valid pastes remain native.
+      normalizeNicknameInput(candidate);
+      setError(undefined);
+    } catch (error) {
+      event.preventDefault();
+      setError((error as Error).message);
+    }
+  };
 
   return (
     <section className="vr-entry vr-entry--landing" data-testid="voice-room-entry">
-      <div className="vr-entry__choices">
-        <section className="vr-entry__choice-panel vr-entry__choice--host">
-          <label>
-            房间名称
-            <input aria-label="房间标题" aria-describedby="create-name-hint" aria-invalid={!!createError} disabled={pending} value={roomName} onChange={(event) => setRoomName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && roomName.trim() && !createError && !pending) { setToast(undefined); void controller.createHostRoom({ roomName }).catch(reportFailure); } }} placeholder="例如：周五晚间语聊" />
-          </label>
-          <p id="create-name-hint" className={`vr-entry__hint ${createError ? 'vr-entry__hint--error' : ''}`}>{createError ?? '名称唯一，最多 32 个字符；英文不区分大小写。'}</p>
-          <button type="button" className="vr-entry__primary" disabled={pending || !roomName.trim() || !!createError} onClick={() => {
-            setToast(undefined); void controller.createHostRoom({ roomName }).catch(reportFailure);
-          }}>创建并进入</button>
-        </section>
-        <section className="vr-entry__choice-panel">
-          <label>
-            加入房间
-            <input aria-label="加入的房间名称" aria-describedby="join-name-hint" aria-invalid={!!joinError} disabled={pending} value={joinName} onChange={event => setJoinName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && joinName.trim() && !joinError && !pending) joinByName(); }} placeholder="输入房主告诉你的房间名称" />
-          </label>
-          <p id="join-name-hint" className={`vr-entry__hint ${joinError ? 'vr-entry__hint--error' : ''}`}>{joinError ?? '换一台设备，输入相同名称即可加入。'}</p>
-          <button type="button" className="vr-entry__primary" disabled={pending || !joinName.trim() || !!joinError} onClick={joinByName}>加入房间</button>
-        </section>
+      <div className="vr-entry__inner">
+        <div className="vr-entry__intro">
+          <span className="ink-eyebrow">01 · VOICE ROOM</span>
+          <h1>语聊房：麦位与房内互动</h1>
+          <p>一台设备创建房间成为房主，另一台输入相同名称加入成为听众。右侧数据流会实时记录每一次 RTM 调用与事件。</p>
+        </div>
+        <div className="vr-entry__choices">
+          <section className="vr-entry__choice-panel vr-entry__choice--host">
+            <span className="ink-eyebrow">CREATE · HOST</span>
+            <label>
+              房间名称
+              <input className="ink-input" aria-label="房间标题" aria-describedby="create-name-hint" aria-invalid={!!createError} disabled={pending} value={roomName} onChange={(event) => setRoomName(event.target.value)} onKeyDown={event => submitOnEnter(event, createByName)} placeholder="例如：周五晚间语聊" />
+            </label>
+            <p id="create-name-hint" className={`vr-entry__hint ${createError ? 'vr-entry__hint--error' : ''}`}>{createError ?? '名称唯一，最多 32 个字符；英文不区分大小写。'}</p>
+            <label>
+              你的昵称（选填）
+              <input className="ink-input" aria-label="房主昵称" aria-describedby="host-nickname-hint" aria-invalid={!!hostNicknameError} disabled={pending} value={hostNickname} onChange={event => { setHostNickname(event.target.value); setHostNicknamePasteError(undefined); }} onPaste={event => pasteNickname(event, setHostNicknamePasteError)} onKeyDown={event => submitOnEnter(event, createByName)} placeholder="例如：小明" />
+            </label>
+            <p id="host-nickname-hint" className={`vr-entry__hint ${hostNicknameError ? 'vr-entry__hint--error' : ''}`}>{hostNicknameError ?? '不填使用 Host；最多 20 个字符'}</p>
+            <button type="button" className="ink-button ink-button--primary vr-entry__primary" disabled={!canCreate} onClick={createByName}>创建并进入</button>
+          </section>
+          <section className="vr-entry__choice-panel">
+            <span className="ink-eyebrow">JOIN · AUDIENCE</span>
+            <label>
+              房间名称
+              <input className="ink-input" aria-label="加入的房间名称" aria-describedby="join-name-hint" aria-invalid={!!joinError} disabled={pending} value={joinName} onChange={event => setJoinName(event.target.value)} onKeyDown={event => submitOnEnter(event, joinByName)} placeholder="输入房主告诉你的房间名称" />
+            </label>
+            <p id="join-name-hint" className={`vr-entry__hint ${joinError ? 'vr-entry__hint--error' : ''}`}>{joinError ?? '换一台设备，输入相同名称即可加入。'}</p>
+            <label>
+              你的昵称（选填）
+              <input className="ink-input" aria-label="观众昵称" aria-describedby="audience-nickname-hint" aria-invalid={!!audienceNicknameError} disabled={pending} value={audienceNickname} onChange={event => { setAudienceNickname(event.target.value); setAudienceNicknamePasteError(undefined); }} onPaste={event => pasteNickname(event, setAudienceNicknamePasteError)} onKeyDown={event => submitOnEnter(event, joinByName)} placeholder="例如：小雨" />
+            </label>
+            <p id="audience-nickname-hint" className={`vr-entry__hint ${audienceNicknameError ? 'vr-entry__hint--error' : ''}`}>{audienceNicknameError ?? '不填自动分配昵称；最多 20 个字符'}</p>
+            <button type="button" className="ink-button ink-button--outline vr-entry__primary" disabled={!canJoin} onClick={joinByName}>加入房间</button>
+          </section>
+        </div>
+        {pending && <div className="vr-entry__pending" role="status"><span>{entryView.statusText}</span><button type="button" className="ink-button ink-button--small vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>取消</button></div>}
+        {cleanupFailures.map(failed => <RoomCleanupNotice key={failed.getView().roomId} client={failed}
+          onDone={() => setCleanupFailures(current => current.filter(value => value !== failed))} />)}
+        <p className="vr-entry__footnote">使用耳机可获得更好的语音体验</p>
       </div>
-      {pending && <div className="vr-entry__pending" role="status"><span>{entryView.statusText}</span><button type="button" className="vr-entry__secondary" onClick={() => { void controller.leaveRoom(); }}>取消</button></div>}
-      {cleanupFailures.map(failed => <RoomCleanupNotice key={failed.getView().roomId} client={failed}
-        onDone={() => setCleanupFailures(current => current.filter(value => value !== failed))} />)}
       <VoiceRoomToast message={toast ?? entryView.error} tone="error" placement="page" />
-      <p className="vr-entry__footnote">进入房间后，使用耳机可获得更好的语音体验</p>
     </section>
   );
 }

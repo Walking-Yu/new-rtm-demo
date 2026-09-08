@@ -17,6 +17,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test';
+import type { TraceEntry } from '../src/shared/timeline/traceStore';
 
 /** 占位 App ID。32 位十六进制，形状合法但不对应任何真实项目。 */
 const PLACEHOLDER_APP_ID = '00000000000000000000000000000000';
@@ -83,6 +84,124 @@ async function withAppId(page: Page): Promise<void> {
   }, PLACEHOLDER_APP_ID);
 }
 
+const LONG_TRACE_SUMMARY = '更新房间公告并同步给所有在线成员，保留完整诊断内容。'.repeat(8);
+const LONG_API_NAME = 'storage.setChannelMetadataWithAVeryLongOperationNameForOverflowCoverage';
+const LONG_TRACE_ERROR = '共享状态写入超时，请检查连接后重试；完整错误信息不得因固定行高而丢失。'.repeat(4);
+
+/**
+ * 只替换测试请求中的 trace 读取边界，渲染真实面板、外壳与 CSS。
+ * 不给生产应用增加 fixture 入口，也不改 RTM/RTC adapter 的行为。
+ */
+async function withVisualTraceFixtures(page: Page): Promise<void> {
+  const entries = [
+    { kind: 'api', name: LONG_API_NAME, summary: LONG_TRACE_SUMMARY, durationMs: 12.345 },
+    { kind: 'event', name: 'presence', eventTag: 'REMOTE_STATE_CHANGED', summary: LONG_TRACE_SUMMARY },
+    { kind: 'api', name: 'rtm.publish', summary: LONG_TRACE_SUMMARY, errorCode: -11001, errorMessage: LONG_TRACE_ERROR },
+    { kind: 'event', name: 'linkState' },
+  ].map((entry, index) => ({ ...entry, at: 1_700_000_000_000 + index, seq: index + 1, uid: 'visual-fixture', role: 'host' }));
+
+  await page.route('**/src/shared/timeline/useMergedTraces.ts*', async (route) => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const declaration = 'export function useMergedTraces(';
+    expect(original).toContain(declaration);
+    const body = original.replace(declaration, 'export function originalUseMergedTraces(')
+      + `\nconst visualEntries = ${JSON.stringify(entries)};\nexport function useMergedTraces() { return visualEntries; }\n`;
+    await route.fulfill({ response, body });
+  });
+}
+
+/**
+ * Only this ordering case substitutes the trace source. Keep the real subscription hook
+ * and merge so shuffled timestamps exercise the production ordering boundary. The local
+ * event appends immutable snapshots; it never calls an RTM adapter or enters a room.
+ */
+async function withUpdatingTraceFixtures(page: Page, initialEntries: readonly TraceEntry[]) {
+  const eventName = 'e2e:timeline:append';
+  await page.route('**/src/shared/timeline/useMergedTraces.ts*', async (route) => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const declaration = 'export function useMergedTraces(';
+    expect(original.split(declaration)).toHaveLength(2);
+    const body = original.replace(declaration, 'export function originalUseMergedTraces(') + `
+      let fixtureEntries = ${JSON.stringify(initialEntries)};
+      const fixtureListeners = new Set();
+      const fixtureSources = [{
+        getEntries: () => fixtureEntries,
+        subscribe: listener => {
+          fixtureListeners.add(listener);
+          return () => fixtureListeners.delete(listener);
+        },
+      }];
+      window.addEventListener(${JSON.stringify(eventName)}, event => {
+        fixtureEntries = [...fixtureEntries, ...event.detail];
+        fixtureListeners.forEach(listener => listener());
+      });
+      export function useMergedTraces() { return originalUseMergedTraces(fixtureSources); }
+    `;
+    await route.fulfill({ response, body });
+  });
+  return async (entries: readonly TraceEntry[]) => {
+    await page.evaluate(({ eventName, entries }) => {
+      window.dispatchEvent(new CustomEvent(eventName, { detail: entries }));
+    }, { eventName, entries });
+  };
+}
+
+/**
+ * 仅用于下面两个昵称刷新用例：让既有 E2E adapter 的 Metadata Map 跨刷新保留，
+ * 模拟云端目录的持久性。仍由原 adapter 执行每次读写/版本检查/事件分发；
+ * 不预置、不创建或替换目录，且不修改生产代码、真实 SDK 或其他测试的行为。
+ */
+async function withPersistentE2eMetadata(page: Page): Promise<void> {
+  await page.route('**/src/scenes/voice-room/app-rtm.ts*', async (route) => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const declaration = 'const records = new Map();';
+    expect(original.split(declaration)).toHaveLength(2);
+    const body = original.replace(declaration, `
+      const e2eMetadataKey = 'e2e:nickname:metadata';
+      const records = new Map(JSON.parse(sessionStorage.getItem(e2eMetadataKey) ?? '[]'));
+      const writeRecord = records.set.bind(records);
+      records.set = (key, value) => {
+        const result = writeRecord(key, value);
+        sessionStorage.setItem(e2eMetadataKey, JSON.stringify([...records]));
+        return result;
+      };
+    `);
+    await route.fulfill({ response, body });
+  });
+}
+
+/** Only these chat layout cases echo publishes through the existing synthetic message event. */
+async function withE2eChatEcho(page: Page): Promise<void> {
+  await page.route('**/src/scenes/voice-room/app-rtm.ts*', async (route) => {
+    const response = await route.fetch();
+    const original = await response.text();
+    const publishMethod = /async publish\(\)\s*\{\s*\}/g;
+    expect([...original.matchAll(publishMethod)]).toHaveLength(1);
+    const body = original.replace(publishMethod, `async publish(channelName, message, options) {
+      if (options.channelType === 'MESSAGE') emit('message', {
+        timestamp: Date.now(), channelName, channelType: 'MESSAGE',
+        publisher: userId, messageType: 'STRING', message,
+      });
+    }`);
+    await route.fulfill({ response, body });
+  });
+}
+
+/** 数据流在 <1280 视口默认收为窄栏；需要读取条目时先展开。 */
+async function ensureTimelineExpanded(page: Page): Promise<void> {
+  const toggle = page.getByTestId('timeline-toggle');
+  if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+}
+
+/** 窄屏下展开的数据流覆盖主区；回到主区操作前先收起。 */
+async function ensureTimelineCollapsed(page: Page): Promise<void> {
+  const toggle = page.getByTestId('timeline-toggle');
+  if (await toggle.getAttribute('aria-expanded') === 'true' && (page.viewportSize()?.width ?? 1440) <= 760) await toggle.click();
+}
+
 /** 单端入口不自动连接，导航前只需确认角色选择页已稳定渲染。 */
 async function waitForPlaceholderLoginToSettle(page: Page): Promise<void> {
   await expect(page.getByTestId('voice-room-entry')).toBeVisible();
@@ -111,6 +230,13 @@ function audienceInviteData(roomId = 'voice-room-invite'): string {
     pageUid: null,
     nickname: null,
   })).toString('base64url');
+}
+
+/** 在浏览器外读取用户可见 URL，只核对页面身份与昵称，不读取 SDK 内部状态。 */
+function readRoomIdentity(page: Page): { pageUid: string; nickname: string; role: string; roomId: string } {
+  const params = new URL(page.url()).searchParams;
+  expect([...params.keys()]).toEqual(['data']);
+  return JSON.parse(Buffer.from(params.get('data')!, 'base64url').toString('utf8'));
 }
 
 test.describe('外壳与导航', () => {
@@ -192,8 +318,13 @@ test.describe('语聊房场景', () => {
 
     await expect(page.getByTestId('voice-room-entry')).toBeVisible();
     await expect(page.getByLabel('房间标题')).toBeVisible();
+    await expect(page.getByLabel('房主昵称')).toHaveValue('');
+    await expect(page.getByLabel('观众昵称')).toHaveValue('');
+    await expect(page.getByLabel('房主昵称')).not.toHaveAttribute('required');
+    await expect(page.getByLabel('观众昵称')).not.toHaveAttribute('required');
     await expect(page.getByText('在声音里，相遇', { exact: true })).toHaveCount(0);
-    await expect(page.getByTestId('voice-room-entry').locator('.vr-entry__hero, .vr-entry__choice-panel > span')).toHaveCount(0);
+    await expect(page.getByTestId('voice-room-entry').getByRole('heading', { name: '语聊房：麦位与房内互动' })).toBeVisible();
+    await expect(page.getByTestId('voice-room-entry').getByText('CREATE · HOST')).toBeVisible();
     await expect(page.getByLabel('加入的房间名称')).toBeVisible();
     await expect(page.getByText('通过邀请链接加入', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('房主语聊房')).toHaveCount(0);
@@ -208,21 +339,28 @@ test.describe('语聊房场景', () => {
     await expect(page.getByTestId('voice-room-entry')).toBeVisible();
 
     const entry = page.getByTestId('voice-room-entry');
-    const timeline = page.getByRole('complementary', { name: '时间线' });
     const audiencePanel = page.locator('.vr-entry__choice-panel').nth(1);
     await expect(audiencePanel).toBeAttached();
     const dimensions = await entry.evaluate((element) => ({
       clientHeight: element.clientHeight,
       scrollHeight: element.scrollHeight,
     }));
-
+    const entryBox = await entry.boundingBox();
     expect(dimensions.clientHeight).toBeLessThanOrEqual(520);
     expect(dimensions.scrollHeight).toBeGreaterThanOrEqual(dimensions.clientHeight);
-    const entryBox = await entry.boundingBox();
-    const timelineBox = await timeline.boundingBox();
-    expect(Math.abs((entryBox!.y + entryBox!.height) - (timelineBox!.y + timelineBox!.height))).toBeLessThanOrEqual(1);
+    // 左右栏各自 padding-top，不与主区卡片强制等高；卡片必须完整落在视口内。
+    expect(entryBox!.y + entryBox!.height).toBeLessThanOrEqual(577);
     await audiencePanel.scrollIntoViewIfNeeded();
     await expect(page.getByLabel('加入的房间名称')).toBeVisible();
+    for (const target of [
+      page.getByRole('button', { name: '创建并进入', exact: true }),
+      page.getByRole('button', { name: '加入房间', exact: true }),
+    ]) {
+      await target.scrollIntoViewIfNeeded();
+      await expect(target).toBeInViewport({ ratio: 1 });
+    }
+    await entry.evaluate(element => element.scrollTo({ top: 0 }));
+    await expect(entry.getByRole('heading', { name: '语聊房：麦位与房内互动' })).toBeInViewport({ ratio: 1 });
     await expect(page.getByText('通过邀请链接加入', { exact: true })).toHaveCount(0);
     await expect(page.getByText('本机最近房间')).toHaveCount(0);
   });
@@ -235,7 +373,7 @@ test.describe('语聊房场景', () => {
     await expect(page.getByLabel('房主语聊房')).toBeVisible();
     await expect(page.getByTestId('voice-room-loading-overlay')).toContainText('正在准备房间…');
     await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
-    await expect(page.getByLabel('房主语聊房').getByText('房主视角', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('房主语聊房').getByText('HOST', { exact: true })).toBeVisible();
     await expect(page.getByLabel('房主语聊房').locator('.vr-single__header')).not.toContainText(/host-/);
     await expect(page.getByTestId('voice-room-entry')).toHaveCount(0);
 
@@ -275,9 +413,10 @@ test.describe('语聊房场景', () => {
     await expect(page.getByLabel('听众语聊房').getByLabel('我的上麦')).toHaveCount(0);
     const composer = page.getByLabel('听众语聊房').getByLabel('聊天内容').locator('..');
     await expect(composer.locator('button').last()).toHaveText('申请上麦');
-    await expect(page.getByText('房间连接状态：connected')).toBeVisible();
+    await expect(page.getByTestId('connection-state')).toHaveText(/CONNECTED/);
     // 应用级 listener 从 login 起记录 linkState，数据流默认展示连接事件：登录成功的那一条可见；
     // 手动「隐藏连接」后不再展示。e2e 的无网络会话只在 login 时发出这一条。
+    await ensureTimelineExpanded(page);
     const timeline = page.getByRole('complementary', { name: '时间线' });
     await expect(timeline.getByText('linkState')).toHaveCount(1);
     await page.getByRole('button', { name: '隐藏连接' }).click();
@@ -321,6 +460,159 @@ test.describe('语聊房场景', () => {
   });
 });
 
+test.describe('入房昵称', () => {
+  test.beforeEach(async ({ page }) => { await withAppId(page); });
+
+  test('Host 自填中文与 Emoji，组合输入不提前提交，刷新保留昵称和身份', async ({ page }) => {
+    await withPersistentE2eMetadata(page);
+    await page.goto('/social/voice-room');
+    const nickname = '🌟 小明';
+    const hostInput = page.getByLabel('房主昵称');
+    const audienceInput = page.getByLabel('观众昵称');
+    await page.getByLabel('房间标题').fill('自填房主昵称');
+    await audienceInput.fill('观众草稿');
+    await hostInput.fill(`  ${nickname}  `);
+    await expect(audienceInput).toHaveValue('观众草稿');
+    await hostInput.dispatchEvent('compositionstart', { data: '小明' });
+    await hostInput.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true });
+    await expect(page.getByRole('button', { name: '创建并进入' })).toBeEnabled();
+    await expect(page.getByLabel('房主语聊房')).toHaveCount(0);
+    await hostInput.dispatchEvent('compositionend', { data: '小明' });
+    await hostInput.press('Enter');
+    const room = page.getByLabel('房主语聊房');
+    await expect(room).toBeVisible();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    const beforeRefresh = readRoomIdentity(page);
+    expect(beforeRefresh).toMatchObject({ role: 'host', nickname });
+    expect(beforeRefresh.pageUid).toBeTruthy();
+    await expect(room.locator('.vr-single__seat-copy strong').first()).toHaveText(nickname);
+    await expect(room.locator('.vr-single__seat-avatar').first()).toHaveText('🌟');
+    await room.getByLabel('聊天内容').fill('自定义昵称的本端消息');
+    await room.getByRole('button', { name: '发送聊天', exact: true }).click();
+    await expect(room.getByLabel('聊天内容')).toHaveValue('');
+    await ensureTimelineExpanded(page);
+    // 既有 adapter 不回送 message，这里只验证出站 API 摘要中的昵称，不冒充远端接收或公屏回显。
+    await expect(page.getByRole('complementary', { name: '时间线' }).getByTestId('trace-row')
+      .filter({ has: page.locator('.lab-trace__name').filter({ hasText: /^rtm\.publish$/ }) }))
+      .toContainText(`MESSAGE chat.message from ${nickname}`);
+
+    await page.reload();
+    await expect(room).toBeVisible();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    expect(readRoomIdentity(page)).toMatchObject(beforeRefresh);
+    await expect(room.locator('.vr-single__seat-copy strong').first()).toHaveText(nickname);
+    await ensureTimelineExpanded(page);
+    await expect(page.locator('.lab-trace__name').filter({ hasText: /^storage\.setChannelMetadata$/ })).toHaveCount(0);
+    await ensureTimelineCollapsed(page);
+    await page.getByRole('button', { name: '暂时离开' }).click();
+    await expect(hostInput).toHaveValue(nickname);
+    await expect(audienceInput).toHaveValue('');
+  });
+
+  test('Audience 按名称使用自填昵称，同页换角色及刷新保持同一 UID', async ({ page }) => {
+    await withPersistentE2eMetadata(page);
+    await page.goto('/social/voice-room');
+    const roomName = '自填观众昵称';
+    const nickname = '小雨 🎧';
+    await page.getByLabel('房间标题').fill(roomName);
+    await page.getByLabel('房主昵称').fill('房主草稿');
+    await page.getByLabel('观众昵称').fill(nickname);
+    await page.getByRole('button', { name: '创建并进入' }).click();
+    await expect(page.getByLabel('房主语聊房')).toBeVisible();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    const hostIdentity = readRoomIdentity(page);
+    await page.getByRole('button', { name: '暂时离开' }).click();
+    await expect(page.getByLabel('房主昵称')).toHaveValue('房主草稿');
+    await expect(page.getByLabel('观众昵称')).toHaveValue(nickname);
+    await page.getByLabel('加入的房间名称').fill(roomName);
+    await page.getByLabel('观众昵称').press('Enter');
+    const room = page.getByLabel('听众语聊房');
+    await expect(room).toBeVisible();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    const beforeRefresh = readRoomIdentity(page);
+    expect(beforeRefresh).toMatchObject({ role: 'audience', nickname, pageUid: hostIdentity.pageUid, roomId: hostIdentity.roomId });
+    await expect(room.locator('.vr-single__nickname')).toHaveText(nickname);
+
+    await page.reload();
+    await expect(room).toBeVisible();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    expect(readRoomIdentity(page)).toMatchObject(beforeRefresh);
+    await expect(room.locator('.vr-single__nickname')).toHaveText(nickname);
+    await ensureTimelineExpanded(page);
+    await expect(page.locator('.lab-trace__name').filter({ hasText: /^storage\.setChannelMetadata$/ })).toHaveCount(0);
+    await ensureTimelineCollapsed(page);
+    await page.getByRole('button', { name: '退出房间', exact: true }).click();
+    await expect(page.getByLabel('观众昵称')).toHaveValue(nickname);
+    await expect(page.getByLabel('房主昵称')).toHaveValue('');
+  });
+
+  test('20 个 Emoji 可用，21 个报错且两卡片独立；空白昵称保留角色默认值', async ({ page }) => {
+    await page.goto('/social/voice-room');
+    const roomName = '昵称边界验证';
+    const hostInput = page.getByLabel('房主昵称');
+    const audienceInput = page.getByLabel('观众昵称');
+    const create = page.getByRole('button', { name: '创建并进入' });
+    const join = page.getByRole('button', { name: '加入房间', exact: true });
+    await page.getByLabel('房间标题').fill(roomName);
+    await page.getByLabel('加入的房间名称').fill(roomName);
+    await hostInput.fill('😀'.repeat(20));
+    await expect(hostInput).toHaveValue('😀'.repeat(20));
+    await expect(hostInput).toHaveAttribute('aria-invalid', 'false');
+    await expect(create).toBeEnabled();
+    await hostInput.fill('😀'.repeat(21));
+    await expect(hostInput).toHaveAttribute('aria-invalid', 'true');
+    await expect(hostInput).toHaveAccessibleDescription('昵称最多 20 个字符');
+    await expect(create).toBeDisabled();
+    await expect(join).toBeEnabled();
+    await expect(audienceInput).toHaveValue('');
+    await audienceInput.fill('听'.repeat(21));
+    await expect(audienceInput).toHaveAttribute('aria-invalid', 'true');
+    await expect(audienceInput).toHaveAccessibleDescription('昵称最多 20 个字符');
+    await expect(join).toBeDisabled();
+    await hostInput.fill('   ');
+    await expect(hostInput).toHaveAttribute('aria-invalid', 'false');
+    await expect(create).toBeEnabled();
+    await audienceInput.fill('');
+    await expect(audienceInput).toHaveAttribute('aria-invalid', 'false');
+    await expect(join).toBeEnabled();
+    await create.click();
+    await expect(page.getByLabel('房主语聊房')).toBeVisible();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    expect(readRoomIdentity(page).nickname).toBe('Host');
+    await page.getByRole('button', { name: '暂时离开' }).click();
+    await join.click();
+    await expect(page.getByLabel('听众语聊房')).toBeVisible();
+    await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+    const audienceNickname = readRoomIdentity(page).nickname;
+    expect(audienceNickname).toMatch(/^[A-Z][a-z]+_\d{3}$/);
+    await expect(page.getByLabel('听众语聊房').locator('.vr-single__nickname')).toHaveText(audienceNickname);
+  });
+
+  for (const theme of ['light', 'dark'] as const) {
+    test(`${theme}：低视口下两卡片昵称与提交按钮均可滚动到达`, async ({ page }, testInfo) => {
+      const width = testInfo.project.name === 'desktop-chromium' ? 1280 : 412;
+      await page.setViewportSize({ width, height: 577 });
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
+      await page.goto('/social/voice-room');
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      await page.getByLabel('房间标题').fill('滚动可达验证');
+      await page.getByLabel('加入的房间名称').fill('滚动可达验证');
+      for (const [label, submit] of [['房主昵称', '创建并进入'], ['观众昵称', '加入房间']]) {
+        const input = page.getByLabel(label, { exact: true });
+        await input.scrollIntoViewIfNeeded();
+        await input.fill('😀'.repeat(20));
+        await expect(input).toBeInViewport({ ratio: 1 });
+        const button = page.getByRole('button', { name: submit, exact: true });
+        await button.scrollIntoViewIfNeeded();
+        await expect(button).toBeInViewport({ ratio: 1 });
+        await expect(button).toBeEnabled();
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`nickname-entry-${theme}.png`) });
+    });
+  }
+});
+
 test.describe('时间线面板', () => {
   test.beforeEach(async ({ page }) => {
     await withAppId(page);
@@ -332,6 +624,7 @@ test.describe('时间线面板', () => {
 
     const timeline = page.getByRole('complementary', { name: '时间线' });
     const body = page.locator('.lab-body');
+    await ensureTimelineExpanded(page);
     await expect(body).toHaveAttribute('data-timeline', 'expanded');
 
     await page.getByTestId('timeline-toggle').click();
@@ -339,6 +632,8 @@ test.describe('时间线面板', () => {
     // 折叠态仍留一条竖条与条目计数，数据不清空
     await expect(timeline).toBeVisible();
     await expect(page.getByTestId('timeline-count')).toBeVisible();
+    const collapsedBox = await timeline.boundingBox();
+    expect(collapsedBox!.width).toBeLessThanOrEqual(50);
 
     await page.getByTestId('timeline-toggle').click();
     await expect(body).toHaveAttribute('data-timeline', 'expanded');
@@ -346,24 +641,34 @@ test.describe('时间线面板', () => {
     expect(unexpected()).toEqual([]);
   });
 
-  test('窄屏时时间线转为主区下方的横排区块', async ({ page }, testInfo) => {
+  test('<1280 时右栏优先收起为窄栏，<1024 时左栏也收起', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop-chromium', '只在桌面项目里改视口验证断点');
 
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto('/social/voice-room');
     const timeline = page.getByRole('complementary', { name: '时间线' });
     const roomEntry = page.getByTestId('voice-room-entry');
+    const workspace = page.locator('.lab-workspace');
 
-    // 宽屏：时间线在主区右侧
-    await page.setViewportSize({ width: 1440, height: 1000 });
+    // 宽屏：三栏都展开，时间线在主区右侧
+    await expect(workspace).toHaveAttribute('data-left', 'expanded');
+    await expect(workspace).toHaveAttribute('data-timeline', 'expanded');
     const wideTimeline = await timeline.boundingBox();
     const wideEntry = await roomEntry.boundingBox();
     expect(wideTimeline!.x).toBeGreaterThan(wideEntry!.x);
+    expect(wideTimeline!.width).toBeGreaterThanOrEqual(400);
 
-    // 960px 及以下：退化为单列，时间线落到主区下方
-    await page.setViewportSize({ width: 900, height: 1000 });
+    // <1280：右栏收为 48px 窄栏，左栏仍展开
+    await page.setViewportSize({ width: 1100, height: 1000 });
+    await expect(workspace).toHaveAttribute('data-timeline', 'collapsed');
+    await expect(workspace).toHaveAttribute('data-left', 'expanded');
     const narrowTimeline = await timeline.boundingBox();
-    const narrowEntry = await roomEntry.boundingBox();
-    expect(narrowTimeline!.y).toBeGreaterThan(narrowEntry!.y);
+    expect(narrowTimeline!.width).toBeLessThanOrEqual(50);
+    expect(narrowTimeline!.x).toBeGreaterThan(wideEntry!.x);
+
+    // <1024：左栏也收起
+    await page.setViewportSize({ width: 900, height: 1000 });
+    await expect(workspace).toHaveAttribute('data-left', 'collapsed');
   });
 });
 
@@ -415,15 +720,19 @@ test.describe('体验路径与工作台适配', () => {
     await room.getByLabel('聊天内容').fill('本端测试消息');
     await room.getByLabel('聊天内容').press('Enter');
     if (mobileGuide) await toggle.click();
-    await expect(path.getByRole('button', { name: '发送房内消息 进行中' })).toBeVisible();
+    // 本地回显不构成远端完成证据；任务只有「已完成 / 待体验」两种状态。
+    await expect(path.getByRole('button', { name: '发送房内消息 待体验' })).toBeVisible();
     await expect(progress).toHaveAttribute('aria-valuenow', '1');
     if (mobileGuide) await toggle.click();
+    await ensureTimelineExpanded(page);
     await page.getByRole('button', { name: '清空', exact: true }).click();
+    await ensureTimelineCollapsed(page);
     if (mobileGuide) await toggle.click();
     await expect(progress).toHaveAttribute('aria-valuenow', '1');
     if (mobileGuide) await toggle.click();
     await page.getByRole('link', { name: '电商直播', exact: true }).click();
-    await page.getByRole('link', { name: '语聊房', exact: true }).click();
+    // 占位页正文也有「语聊房」链接，限定到顶栏导航。
+    await page.getByRole('navigation', { name: '一级场景分类' }).getByRole('link', { name: '语聊房', exact: true }).click();
     if (mobileGuide) await toggle.click();
     await expect(progress).toHaveAttribute('aria-valuenow', '0');
   });
@@ -491,6 +800,8 @@ test.describe('体验路径与工作台适配', () => {
       if ([1440, 1280, 412].includes(width)) await page.screenshot({ path: testInfo.outputPath(`room-${width}.png`), fullPage: true });
     }
     const path = page.getByRole('complementary', { name: '体验路径' });
+    const pathToggle = path.getByRole('button', { name: '体验路径', exact: true });
+    if (await pathToggle.getAttribute('aria-expanded') === 'false') await pathToggle.click();
     for (const name of ['前往 Console 创建项目', '产品简介', '最佳实践', 'API参考']) {
       await path.getByRole('link', { name, exact: true }).scrollIntoViewIfNeeded();
       await expect(path.getByRole('link', { name, exact: true })).toBeVisible();
@@ -534,8 +845,10 @@ test('房主解散直接返回入口，可同名重建且刷新不会恢复已�
   await expect(page.getByTestId('voice-room-entry')).toBeVisible();
   await expect(page.getByTestId('voice-room-ended')).toHaveCount(0);
   await expect(page).toHaveURL(/\/social\/voice-room$/);
+  await ensureTimelineExpanded(page);
   await expect(page.getByRole('complementary', { name: '时间线' })).toContainText('rtm.unsubscribe');
   await expect(page.getByRole('complementary', { name: '时间线' })).toContainText('storage.removeChannelMetadata');
+  await ensureTimelineCollapsed(page);
   await page.getByRole('button', { name: '创建并进入' }).click();
   await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
   await expect(page.getByLabel('房主语聊房')).toBeVisible();
@@ -552,16 +865,325 @@ test('类型筛选直接展示 API 和事件颜色，取消独立图例', async 
   await withAppId(page);
   await page.goto('/social/voice-room');
   await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+  await ensureTimelineExpanded(page);
   await expect(page.getByTestId('timeline-legend')).toHaveCount(0);
   const filter = page.getByTestId('filter-kind');
   for (const kind of ['api', 'event']) {
     const button = filter.locator(`button[data-kind="${kind}"]`);
     const dot = button.locator('.lab-trace__dot');
-    const traceDot = page.locator(`.lab-trace > .lab-trace__dot[data-kind="${kind}"]`).first();
-    expect(await dot.evaluate(el => getComputedStyle(el).backgroundColor))
-      .toBe(await traceDot.evaluate(el => getComputedStyle(el).backgroundColor));
+    const row = page.locator(`.lab-trace[data-kind="${kind}"]`).first();
+    const kindColor = await dot.evaluate(el => getComputedStyle(el).backgroundColor);
+    // 等待新行呼吸结束后比较静态边框；pill 中的圆点仍是类型图例。
+    await expect(row).toHaveCSS('box-shadow', 'none', { timeout: 6_000 });
+    await expect(row).toHaveCSS('border-left-color', kindColor);
+    await expect(row.locator('.lab-trace__kind')).toHaveCSS('color', kindColor);
+    await expect(row.locator('.lab-trace__dot')).toHaveCount(0);
     await button.click();
     await expect(button).toHaveAttribute('aria-pressed', 'true');
     await button.click();
+  }
+});
+
+test('数据流最新在前：乱序时间、筛选、旧记录滚动和折叠期间追加', async ({ page }, testInfo) => {
+  if (testInfo.project.name === 'desktop-chromium') await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await withAppId(page);
+  const unexpected = collectErrors(page);
+  const baseTime = 1_700_000_000_000;
+  const nameFor = (offset: number) => `${offset % 2 === 0 ? 'api' : 'event'}.operation-${String(offset).padStart(2, '0')}`;
+  // Arrival sequence intentionally differs from timestamp order in both directions.
+  const offsets = [12, 2, 19, 5, 0, 22, 8, 15, 3, 20, 10, 17, 6, 23, 1, 18, 9, 14, 4, 21, 7, 16, 11, 13];
+  const initialEntries: TraceEntry[] = offsets.map((offset, index) => ({
+    at: baseTime + offset * 1_000,
+    seq: index + 1,
+    kind: offset % 2 === 0 ? 'api' : 'event',
+    name: nameFor(offset),
+    summary: `时间顺序 ${offset}；到达顺序 ${index + 1}`,
+    uid: 'timeline-order-fixture',
+    role: 'host',
+  }));
+  const append = await withUpdatingTraceFixtures(page, initialEntries);
+  await page.goto('/social/voice-room');
+  await expect(page.getByTestId('voice-room-entry')).toBeVisible();
+  await ensureTimelineExpanded(page);
+  const rows = page.getByTestId('trace-row');
+  const names = rows.locator('.lab-trace__name');
+  const body = page.getByTestId('timeline-body');
+  const expectedOffsets = Array.from({ length: 24 }, (_, index) => 23 - index);
+  const expectedNames = expectedOffsets.map(nameFor);
+  await expect(names).toHaveText(expectedNames);
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(rows.first()).toBeInViewport();
+
+  for (const kind of ['api', 'event'] as const) {
+    const filter = page.getByTestId('filter-kind').locator(`button[data-kind="${kind}"]`);
+    await filter.click();
+    await expect(names).toHaveText(expectedOffsets.filter(offset => (offset % 2 === 0 ? 'api' : 'event') === kind).map(nameFor));
+    await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+    await filter.click();
+    await expect(names).toHaveText(expectedNames);
+  }
+
+  await body.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await expect(rows.last()).toBeInViewport();
+  await expect(rows.last().locator('.lab-trace__name')).toHaveText('api.operation-00');
+  await expect(rows.first()).not.toBeInViewport();
+
+  // The most recently delivered entry is older; it must not displace the newest timestamp.
+  const newest: TraceEntry = { ...initialEntries[0], seq: 25, at: baseTime + 30_000, name: 'api.newest-visible', summary: '查看旧记录时到达的新调用' };
+  const delayed: TraceEntry = { ...initialEntries[1], seq: 26, at: baseTime + 4_500, kind: 'event', name: 'event.delayed', summary: '晚到的旧时间戳事件' };
+  await append([newest, delayed]);
+  const afterAppend = ['api.newest-visible', ...expectedNames];
+  afterAppend.splice(afterAppend.indexOf('api.operation-04'), 0, 'event.delayed');
+  await expect(names).toHaveText(afterAppend);
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(rows.first()).toBeInViewport();
+
+  await body.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(rows.last()).toBeInViewport();
+  await page.getByTestId('timeline-toggle').click();
+  await expect(page.getByTestId('timeline-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await append([{ ...newest, seq: 27, at: baseTime + 31_000, name: 'api.newest-while-collapsed', summary: '折叠期间的新调用' }]);
+  await expect(page.getByTestId('timeline-count')).toHaveText('27');
+  await ensureTimelineExpanded(page);
+  await expect(names).toHaveText(['api.newest-while-collapsed', ...afterAppend]);
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(rows.first()).toBeInViewport();
+  await expect(rows.last()).not.toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath('timeline-newest-first.png') });
+  expect(unexpected()).toEqual([]);
+});
+
+test.describe('v1.2 数据流视觉增量', () => {
+  for (const theme of ['light', 'dark'] as const) {
+    test(`${theme}：方格、卡片投影、标题图标与长记录布局`, async ({ page }, testInfo) => {
+      if (testInfo.project.name === 'desktop-chromium') await page.setViewportSize({ width: 1440, height: 900 });
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
+      await withAppId(page);
+      await withVisualTraceFixtures(page);
+      await page.goto('/social/voice-room');
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+
+      const main = page.locator('.lab-body');
+      await expect(main).toHaveCSS('background-size', '72px 72px, 72px 72px');
+      await expect(main).toHaveCSS('background-position', '-1px -1px, -1px -1px');
+      const grid = await main.evaluate(el => getComputedStyle(el).backgroundImage);
+      expect(grid.match(/linear-gradient/g)).toHaveLength(2);
+      expect(grid).toContain(theme === 'light' ? 'rgb(236, 236, 238)' : 'rgb(26, 27, 30)');
+
+      const path = page.getByRole('complementary', { name: '体验路径' });
+      const pathToggle = path.getByRole('button', { name: '体验路径', exact: true });
+      if (await pathToggle.getAttribute('aria-expanded') === 'false') await pathToggle.click();
+      const pathIcon = path.locator('.experience-path__title > svg');
+      await expect(pathIcon).toHaveAttribute('aria-hidden', 'true');
+      await expect(pathIcon).toHaveCSS('width', '16px');
+      await expect(pathIcon).toHaveCSS('height', '16px');
+      await expect(pathIcon).toHaveAttribute('stroke-width', '1.8');
+      await expect(path).toHaveCSS('background-image', 'none');
+      if ((page.viewportSize()?.width ?? 1440) <= 760) await pathToggle.click();
+
+      await page.getByLabel('房间标题').fill(`视觉验收-${theme}`);
+      await page.getByRole('button', { name: '创建并进入' }).click();
+      const room = page.getByLabel('房主语聊房');
+      await expect(room).toBeVisible();
+      await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+      await expect(room).toHaveCSS('box-shadow', theme === 'light'
+        ? 'rgba(17, 18, 20, 0.04) 0px 1px 2px 0px, rgba(17, 18, 20, 0.12) 0px 12px 32px -8px'
+        : 'rgba(0, 0, 0, 0.4) 0px 1px 2px 0px, rgba(0, 0, 0, 0.6) 0px 12px 32px -8px');
+
+      await ensureTimelineExpanded(page);
+      const timeline = page.getByRole('complementary', { name: '时间线' });
+      await expect(page.getByTestId('timeline-toggle')).toHaveAttribute('aria-expanded', 'true');
+      const actionsBounds = await timeline.locator('.lab-timeline__actions').boundingBox();
+      for (const selector of ['.lab-timeline__heading', '.lab-timeline__title']) {
+        const bounds = await timeline.locator(selector).boundingBox();
+        expect(bounds!.x + bounds!.width, `${theme} ${testInfo.project.name} 下 ${selector} 不遮挡操作区`)
+          .toBeLessThanOrEqual(actionsBounds!.x);
+      }
+      await expect(timeline.locator('.lab-timeline__heading')).toHaveText('RTM 数据流');
+      await expect(timeline.locator('.lab-timeline__entry-count')).toHaveCount(0);
+      for (const kind of ['api', 'event']) {
+        const filter = timeline.getByTestId('filter-kind').locator(`button[data-kind="${kind}"]`);
+        await expect(filter.locator('.lab-timeline__filter-count')).toHaveText('2');
+        await expect(filter.locator('.lab-trace__dot')).toBeVisible();
+      }
+      const timelineIcon = timeline.locator('.lab-timeline__title svg');
+      await expect(timelineIcon).toHaveAttribute('aria-hidden', 'true');
+      await expect(timelineIcon).toHaveCSS('width', '16px');
+      await expect(timelineIcon).toHaveCSS('height', '16px');
+      await expect(timelineIcon).toHaveAttribute('stroke-width', '1.8');
+      await expect(timeline).toHaveCSS('background-image', 'none');
+      await expect(page.locator('.lab-timeline__list')).toHaveCSS('row-gap', '10px');
+
+      const rows = page.getByTestId('trace-row');
+      await expect(rows).toHaveCount(4);
+      const dimensions = await rows.evaluateAll(elements => elements.map(element => ({
+        height: element.getBoundingClientRect().height,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      })));
+      for (const row of dimensions) {
+        expect(row.height).toBe(70);
+        expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+      }
+      await expect(rows.first()).toHaveCSS('background-color', theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(20, 21, 23)');
+      await expect(rows.first()).toHaveCSS('border-top-width', '1px');
+      await expect(rows.first()).toHaveCSS('border-left-width', '3px');
+      const longApi = rows.filter({ has: page.locator('.lab-trace__name', { hasText: LONG_API_NAME }) });
+      await expect(longApi).toHaveAttribute('title', new RegExp(LONG_TRACE_SUMMARY));
+      await expect(rows.filter({ has: page.locator('.lab-trace__name', { hasText: /^presence$/ }) }).locator('.lab-trace__kind')).toHaveText('EVENT');
+      for (const locator of [longApi.locator('.lab-trace__name'), longApi.locator('.lab-trace__summary-text')]) {
+        await expect(locator).toHaveCSS('white-space', 'nowrap');
+        await expect(locator).toHaveCSS('text-overflow', 'ellipsis');
+        expect(await locator.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+      }
+      const failed = rows.filter({ has: page.getByTestId('trace-error') });
+      await expect(failed).toHaveAttribute('title', new RegExp(LONG_TRACE_ERROR));
+      await expect(failed).toHaveAttribute('title', /-11001/);
+      await expect(failed.getByTestId('trace-error').locator('code')).toBeVisible();
+      await expect(failed.getByTestId('trace-error')).toContainText(LONG_TRACE_ERROR);
+      await expect(failed.locator('.lab-trace__error-message')).toHaveCSS('text-overflow', 'ellipsis');
+      await expect(rows.filter({ has: page.locator('.lab-trace__name', { hasText: /^linkState$/ }) }).locator('.lab-trace__summary')).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`trace-v1-2-${theme}.png`) });
+    });
+  }
+
+  test('边框呼吸保持行底，结束恢复静态，减少动态效果时不播放', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' });
+    await withAppId(page);
+    await withVisualTraceFixtures(page);
+    await page.goto('/social/voice-room');
+    await ensureTimelineExpanded(page);
+    const row = page.getByTestId('trace-row').filter({ has: page.locator('.lab-trace__name', { hasText: LONG_API_NAME }) });
+    await expect(row).toHaveCSS('animation-duration', '0.35s, 1.8s');
+    await expect(row).toHaveCSS('animation-iteration-count', '1, 2');
+    await expect(row).toHaveCSS('animation-delay', '0s, 0.3s');
+    await expect.poll(() => row.evaluate(element => getComputedStyle(element).boxShadow)).not.toBe('none');
+    await expect(row).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+    await expect(row).toHaveCSS('box-shadow', 'none', { timeout: 6_000 });
+    await expect(row).toHaveCSS('border-top-color', 'rgb(230, 231, 234)');
+    await expect(row).toHaveCSS('border-left-color', 'rgb(47, 169, 138)');
+    await expect(row).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.reload();
+    await ensureTimelineExpanded(page);
+    await expect(row).toHaveCSS('animation-name', 'none');
+    expect(await row.evaluate(element => element.getAnimations().length)).toBe(0);
+    await expect(row).toHaveCSS('border-left-color', 'rgb(47, 169, 138)');
+  });
+});
+
+test.describe('公屏五行窗口与房主皇冠', () => {
+  for (const theme of ['light', 'dark'] as const) {
+    test(`${theme}：保留全部消息、可滚动五行窗口与图标标识`, async ({ page }, testInfo) => {
+      if (testInfo.project.name === 'desktop-chromium') await page.setViewportSize({ width: 1440, height: 900 });
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
+      await withAppId(page);
+      await withE2eChatEcho(page);
+      await page.goto('/social/voice-room');
+      await page.getByLabel('房间标题').fill(`公屏验收-${theme}`);
+      await page.getByRole('button', { name: '创建并进入' }).click();
+      const room = page.getByLabel('房主语聊房');
+      await expect(room).toBeVisible();
+      await expect(page.getByTestId('voice-room-loading-overlay')).toHaveCount(0);
+
+      const hostSeat = room.locator('.vr-single__seat').first();
+      const crown = hostSeat.getByRole('img', { name: '房主', exact: true });
+      await crown.scrollIntoViewIfNeeded();
+      await expect(crown).toHaveAttribute('title', '房主');
+      await expect(crown).toHaveText('');
+      await expect(crown.locator('svg')).toHaveCSS('width', '22px');
+      await expect(crown.locator('svg')).toHaveCSS('height', '22px');
+      const unclipped = await crown.locator('svg').evaluate(element => {
+        const icon = element.getBoundingClientRect();
+        for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+          const style = getComputedStyle(ancestor);
+          const bounds = ancestor.getBoundingClientRect();
+          if (/(hidden|clip|auto|scroll)/.test(style.overflowX) && (icon.left < bounds.left || icon.right > bounds.right)) return false;
+          if (/(hidden|clip|auto|scroll)/.test(style.overflowY) && (icon.top < bounds.top || icon.bottom > bounds.bottom)) return false;
+        }
+        return true;
+      });
+      expect(unclipped, '皇冠不被祖先容器裁切').toBe(true);
+      const overlap = await hostSeat.evaluate(element => {
+        const icon = element.querySelector('.vr-single__seat-host svg')!.getBoundingClientRect();
+        const avatar = element.querySelector('.vr-single__seat-avatar')!.getBoundingClientRect();
+        return Math.max(0, Math.min(icon.right, avatar.right) - Math.max(icon.left, avatar.left))
+          * Math.max(0, Math.min(icon.bottom, avatar.bottom) - Math.max(icon.top, avatar.top));
+      });
+      expect(overlap, '皇冠不能遮挡头像').toBe(0);
+
+      const feed = room.getByTestId('voice-room-chat-feed');
+      const messages = feed.locator('p[data-interaction-type="chat"]');
+      const input = room.getByLabel('聊天内容');
+      for (let index = 1; index <= 7; index += 1) {
+        await input.fill(`短${index}`);
+        await room.getByRole('button', { name: '发送聊天', exact: true }).click();
+        await expect(messages).toHaveCount(index);
+      }
+      const text = await messages.locator('span').allTextContents();
+      expect(text.map(value => value.trim())).toEqual(['短1', '短2', '短3', '短4', '短5', '短6', '短7']);
+      await expect(feed).toHaveAttribute('tabindex', '0');
+      await expect(feed).toHaveAttribute('aria-label', '公屏消息，可上下滚动');
+      await expect(feed).toHaveCSS('overflow-y', 'auto');
+      const dimensions = await feed.evaluate(element => {
+        const style = getComputedStyle(element);
+        const rows = [...element.querySelectorAll('p[data-interaction-type="chat"]')];
+        return {
+          height: element.getBoundingClientRect().height,
+          scrollHeight: element.scrollHeight,
+          clientHeight: element.clientHeight,
+          lineHeight: parseFloat(getComputedStyle(rows[0]).lineHeight),
+          gap: parseFloat(style.rowGap),
+          rowHeights: rows.map(row => row.getBoundingClientRect().height),
+        };
+      });
+      expect(dimensions.height).toBeCloseTo(dimensions.lineHeight * 5 + dimensions.gap * 4, 1);
+      expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight);
+      for (const height of dimensions.rowHeights) expect(height).toBeCloseTo(dimensions.lineHeight, 1);
+      await expect.poll(() => feed.evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1);
+      const fullyVisible = await feed.evaluate(element => {
+        const viewport = element.getBoundingClientRect();
+        return [...element.querySelectorAll('p[data-interaction-type="chat"]')].filter(row => {
+          const bounds = row.getBoundingClientRect();
+          return bounds.top >= viewport.top - 1 && bounds.bottom <= viewport.bottom + 1;
+        }).length;
+      });
+      expect(fullyVisible).toBe(5);
+
+      await feed.evaluate(element => element.scrollTo({ top: 0 }));
+      await expect.poll(() => feed.evaluate(element => element.scrollTop)).toBe(0);
+      const firstIsInside = await messages.first().evaluate(element => {
+        const row = element.getBoundingClientRect();
+        const viewport = element.parentElement!.getBoundingClientRect();
+        return row.top >= viewport.top - 1 && row.bottom <= viewport.bottom + 1;
+      });
+      expect(firstIsInside).toBe(true);
+      await feed.evaluate(element => element.scrollTo({ top: element.scrollHeight }));
+      await expect.poll(() => feed.evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1);
+      await page.screenshot({ path: testInfo.outputPath(`chat-five-rows-${theme}.png`), fullPage: true });
+
+      // New messages still bring the actual scroll container to the latest entry.
+      await feed.evaluate(element => element.scrollTo({ top: 0 }));
+      const longMessage = '这是一条较长的公屏消息，换行后仍可完整阅读。'.repeat(20);
+      await input.fill(longMessage);
+      await room.getByRole('button', { name: '发送聊天', exact: true }).click();
+      await expect(messages).toHaveCount(8);
+      await expect(messages.last()).toContainText(longMessage);
+      await expect(messages.last()).toHaveCSS('white-space', 'normal');
+      const longBounds = await messages.last().evaluate(element => ({
+        height: element.getBoundingClientRect().height,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }));
+      expect(longBounds.height).toBeGreaterThan(dimensions.lineHeight * 2);
+      expect(longBounds.scrollWidth).toBeLessThanOrEqual(longBounds.clientWidth);
+      await expect.poll(() => feed.evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThanOrEqual(1);
+      await expect(messages.first()).toContainText('短1');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    });
   }
 });

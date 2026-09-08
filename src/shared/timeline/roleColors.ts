@@ -1,12 +1,13 @@
 /**
  * 角色 → uid badge 配色。
  *
- * **这是 badge 颜色的唯一来源。** 时间线的条目 badge 与主区手机上方的身份条
- * badge 必须同色 —— 读者靠颜色而不是文字判断「这条来自哪一端」（见 spec
+ * **这是 badge 颜色的唯一来源。** 时间线条目上的 badge 与主区身份相关的 badge
+ * 必须同色 —— 读者靠颜色而不是文字判断「这条来自哪一端」（见 spec
  * 「时间线条目形态」与票 20）。两处各写一份颜色一定会漂移，所以收在这里。
  *
  * 用 CSS 自定义属性而不是十六进制字面量：颜色值仍然只写在 `styles.css` 的
- * `:root` 里一处，本模块只负责「哪个角色用哪个变量」这层映射。
+ * token 块里一处，本模块只负责「哪个角色用哪个变量」这层映射。
+ * 「墨」设计系统里 badge 默认由 CSS 隐藏，映射保留供 trace 数据兼容。
  */
 
 /** 角色配色。`accent` 是文字与色点，`soft` 是底色。 */
@@ -23,12 +24,12 @@ export interface RoleColor {
  * 关系下次刷新就失效了。
  */
 const ROLE_COLORS: Record<string, RoleColor> = {
-  host: { accent: 'var(--lab-indigo)', soft: 'var(--lab-indigo-soft)' },
-  audience: { accent: 'var(--lab-green)', soft: 'var(--lab-green-soft)' },
+  host: { accent: 'var(--ink-ink)', soft: 'var(--ink-subtle)' },
+  audience: { accent: 'var(--ink-fg2)', soft: 'var(--ink-av-empty)' },
 };
 
 /** 未登记角色的兜底配色，保证 UI 不因为多出一个角色而崩。 */
-const FALLBACK: RoleColor = { accent: 'var(--lab-amber)', soft: 'var(--lab-amber-soft)' };
+const FALLBACK: RoleColor = { accent: 'var(--ink-mono)', soft: 'var(--ink-code)' };
 
 export function roleColor(role: string): RoleColor {
   return ROLE_COLORS[role] ?? FALLBACK;

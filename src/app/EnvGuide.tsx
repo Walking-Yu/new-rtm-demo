@@ -12,23 +12,30 @@ const INJECT_SNIPPET = `<script>window.__ENV__ = { appId: '你的 App ID' };</sc
 
 export function EnvGuide() {
   return (
-    <div className="lab-guide" data-testid="env-guide">
-      <h1 className="lab-guide__title">还没有配置 App ID</h1>
-      <p className="lab-guide__lead">
-        实验室需要一个声网 App ID 才能连接。按下面任一种方式配置后刷新页面即可。
-      </p>
+    <section className="lab-guide" data-testid="env-guide">
+      <div className="lab-guide__inner">
+        <div className="lab-guide__intro">
+          <span className="ink-eyebrow lab-guide__eyebrow">SETUP REQUIRED</span>
+          <h1 className="lab-guide__title">还没有配置 App ID</h1>
+          <p className="lab-guide__lead">
+            实验室需要一个声网 App ID 才能连接。按下面任一种方式配置后刷新页面即可。
+          </p>
+        </div>
 
-      <section className="lab-guide__section">
-        <h2 className="lab-guide__subtitle">本地开发</h2>
-        <p>在仓库根目录的 .env 文件里写入：</p>
-        <pre className="lab-guide__code">{LOCAL_SNIPPET}</pre>
-      </section>
+        <section className="lab-guide__section">
+          <h2 className="lab-guide__section-title">
+            <span aria-hidden="true">A</span><strong>本地开发</strong><span>仓库根目录 .env</span>
+          </h2>
+          <pre className="lab-guide__code">{LOCAL_SNIPPET}</pre>
+        </section>
 
-      <section className="lab-guide__section">
-        <h2 className="lab-guide__subtitle">线上部署</h2>
-        <p>由上层页面在加载 bundle 之前同步注入，注入必须早于 app 启动：</p>
-        <pre className="lab-guide__code">{INJECT_SNIPPET}</pre>
-      </section>
-    </div>
+        <section className="lab-guide__section">
+          <h2 className="lab-guide__section-title">
+            <span aria-hidden="true">B</span><strong>线上部署</strong><span>上层页面在加载 bundle 前同步注入</span>
+          </h2>
+          <pre className="lab-guide__code">{INJECT_SNIPPET}</pre>
+        </section>
+      </div>
+    </section>
   );
 }

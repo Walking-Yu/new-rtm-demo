@@ -6,7 +6,7 @@
  *
  * ## 三条不要「优化」掉的设计
  *
- * **单列交错，不按端分栏。** 两端的条目混在同一列里按时间排。分栏会把
+ * **单列交错，不按端分栏。** 两端的条目混在同一列里按时间从新到旧排。分栏会把
  * 「一个动作在两端引发的因果链」拆散，而那正是本 demo 要展示的东西。
  *
  * **只呈现 RTM，不含 RTC。** 混入 RTC 节点会稀释「RTM 数据流」这条主线。
@@ -19,18 +19,23 @@
  * ## 没有「已截断」提示
  *
  * 环形缓冲超限**静默**丢弃最旧的，面板不显示任何截断提示（见票 16 与 spec）。
+ *
+ * ## 视觉
+ *
+ * 行左边框与类型标签区分 API 薄荷、EVENT 天蓝；筛选 pill 自带圆点与计数，兼作图例。
+ * 颜色全部来自 `styles.css` 的 token，本文件不写颜色字面量。
  */
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Activity, ChevronsRight, Eraser, RadioTower, Unplug } from 'lucide-react';
 
+import { PanelIcon } from '../experience/ExperiencePath';
 import { filterTraces, type TraceFilter } from './filterTraces';
 import { formatTraceTime } from './formatTraceTime';
 import { roleColor } from './roleColors';
 import type { TraceEntry } from './traceStore';
 import { useMergedTraces, type TraceSource } from './useMergedTraces';
 
-/** 两类节点的图例文案。类型只有这两个值。 */
+/** 两类节点的可访问名。类型只有这两个值；可见文案是等宽的 API / EVENT。 */
 const KIND_LABELS: Record<string, string> = {
   api: '调用 RTM API',
   event: '收到 RTM 事件',
@@ -47,7 +52,7 @@ function formatDurationMs(durationMs: number): string {
 export interface TimelinePanelProps {
   /** 各端的 trace 来源。多端顺序不影响结果 —— 归并按时间戳排。 */
   sources: readonly TraceSource[];
-  /** 折叠态由外层持有：折叠会改变外壳的栅格（1fr/400px → 1fr/40px）。 */
+  /** 折叠态由外层持有：折叠会改变外壳的栅格列宽。 */
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
 }
@@ -58,28 +63,25 @@ function isPicked(allowed: readonly string[] | undefined, value: string): boolea
 }
 
 /**
- * 一条筛选维度的按钮组。
+ * 类型筛选 pill。每个 pill 带对应类型的色点与计数，因此不需要单独的图例。
  *
  * 选中项再点一次即取消（回到「全部」），所以不需要单独的「全部」按钮。
  */
 function FilterRow({
-  label,
   options,
+  counts,
   picked,
   onToggle,
   testId,
 }: {
-  label: string;
   options: readonly string[];
+  counts: Readonly<Record<string, number>>;
   picked: readonly string[] | undefined;
   onToggle: (value: string) => void;
   testId: string;
 }) {
-  if (options.length === 0) return null;
-
   return (
-    <div className="lab-timeline__filter-row" data-testid={testId}>
-      <span className="lab-timeline__filter-label">{label}</span>
+    <div className="lab-timeline__filters" data-testid={testId}>
       {options.map((option) => {
         const selected = isPicked(picked, option);
         return (
@@ -90,11 +92,13 @@ function FilterRow({
             data-active={selected}
             data-kind={option}
             aria-pressed={selected}
+            aria-label={KIND_LABELS[option] ?? option}
             // 再点一次取消 —— 于是「取消筛选后条目全部回来」不需要额外入口。
             onClick={() => onToggle(option)}
           >
             <span className="lab-trace__dot" data-kind={option} aria-hidden="true" />
-            {KIND_LABELS[option] ?? option}
+            {option.toUpperCase()}
+            <span className="lab-timeline__filter-count">{counts[option] ?? 0}</span>
           </button>
         );
       })}
@@ -102,9 +106,13 @@ function FilterRow({
   );
 }
 
-/** 单条时间线条目。行布局是三列网格：色点轨道 16px、时间 82px、正文自适应。 */
+/** 单条时间线条目。行布局是两列网格：时间 86px、正文自适应。 */
 function TraceRow({ entry }: { entry: TraceEntry }) {
   const failed = entry.errorCode !== undefined || entry.errorMessage !== undefined;
+  const errorDescription = [entry.errorCode, entry.errorMessage]
+    .filter((value) => value !== undefined && value !== '')
+    .join(' ');
+  const fullSummary = [entry.summary, errorDescription].filter(Boolean).join('\n');
 
   return (
     <li
@@ -113,16 +121,15 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
       data-role={entry.role}
       data-failed={failed}
       data-testid="trace-row"
+      title={fullSummary || undefined}
     >
-      {/* 色点轨道：api 与 event **靠左侧色点区分**。 */}
-      <span className="lab-trace__dot" data-kind={entry.kind} aria-hidden="true" />
-
-      {/* 时间砍掉小时，只到分秒毫秒 —— 便于分辨紧邻的调用。 */}
+      {/* 时间保留时分秒毫秒 —— 便于分辨紧邻的调用。 */}
       <time className="lab-trace__time">{formatTraceTime(entry.at)}</time>
 
       <div className="lab-trace__body">
         <div className="lab-trace__head">
-          <span className="lab-trace__tag" data-kind={entry.kind}>{entry.kind === 'api' ? 'API' : '事件'}</span>
+          <span className="lab-trace__kind">{entry.kind.toUpperCase()}</span>
+          <span className="lab-trace__name" title={entry.name}>{entry.name}</span>
           {entry.eventTag && <span className="lab-trace__tag" data-kind="event-type">{entry.eventTag}</span>}
           {/* 保留角色配色来源供现有 trace 数据兼容；UI 通过 CSS 隐藏技术 UID。 */}
           <span
@@ -136,18 +143,19 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
           >
             {entry.uid}
           </span>
-          <span className="lab-trace__name">{entry.name}</span>
           {/* 耗时仅 api 条目有。 */}
           {entry.durationMs !== undefined && (
             <span className="lab-trace__duration">{formatDurationMs(entry.durationMs)}</span>
           )}
         </div>
-        {entry.summary && <div className="lab-trace__summary">{entry.summary}</div>}
-        {/* 失败带错误码与错误信息 —— 出错时才知道该查什么。 */}
-        {failed && (
-          <div className="lab-trace__error" data-testid="trace-error">
-            {entry.errorCode !== undefined && <code>{entry.errorCode}</code>}
-            {entry.errorMessage}
+        {(entry.summary || failed) && (
+          <div className="lab-trace__summary">
+            {entry.summary && <span className="lab-trace__summary-text">{entry.summary}</span>}
+            {/* 失败信息与摘要共享详情行，悬浮保留完整诊断内容。 */}
+            {failed && <span className="lab-trace__error" data-testid="trace-error">
+              {entry.errorCode !== undefined && <code>{entry.errorCode}</code>}
+              {entry.errorMessage && <span className="lab-trace__error-message">{entry.errorMessage}</span>}
+            </span>}
           </div>
         )}
       </div>
@@ -169,15 +177,20 @@ export function TimelinePanel({
   // 固定两类，首次进入时筛选器即说明颜色；不随过滤结果变化。
   const kinds = ['api', 'event'] as const;
   const visible = useMemo(
-    () => filterTraces(entries, filter).filter((entry) => showLinkState || entry.name !== 'linkState'),
+    // 归并快照保持时间升序，只反转过滤后生成的展示数组；同毫秒按较大 seq 在前。
+    () => filterTraces(entries, filter).filter((entry) => showLinkState || entry.name !== 'linkState').reverse(),
     [entries, filter, showLinkState],
   );
+  const counts = useMemo(() => {
+    const api = entries.filter((entry) => entry.kind === 'api').length;
+    return { api, event: entries.length - api };
+  }, [entries]);
 
-  // 新的 RTM 调用或事件进入时，始终把时间线定位到最新一项。
+  // 新记录、筛选变化或重新展开时，把时间线定位到顶部的最新一项。
   useLayoutEffect(() => {
     const body = bodyRef.current;
-    if (body) body.scrollTop = body.scrollHeight;
-  }, [visible]);
+    if (body) body.scrollTop = 0;
+  }, [visible, collapsed]);
 
   /** 多选：已选则移除，未选则加入。 */
   function toggleKind(value: string) {
@@ -193,87 +206,89 @@ export function TimelinePanel({
   if (collapsed) {
     return (
       <aside className="lab-timeline lab-timeline--collapsed" aria-label="时间线">
-        <button
-          type="button"
-          className="lab-timeline__collapse"
-          onClick={onToggleCollapsed}
-          aria-expanded={false}
-          data-testid="timeline-toggle"
-        >
-          <span className="lab-timeline__collapse-text">数据流时间线</span>
-          {/* 折叠态显示条目计数，让人知道里面还在攒东西。 */}
-          <span className="lab-timeline__count" data-testid="timeline-count">
-            {entries.length}
-          </span>
-        </button>
+        <div className="lab-timeline__collapse-head">
+          <button
+            type="button"
+            className="ink-icon-button"
+            data-flipped="true"
+            onClick={onToggleCollapsed}
+            aria-expanded={false}
+            aria-label="展开数据流"
+            title="展开数据流"
+            data-testid="timeline-toggle"
+          >
+            <PanelIcon />
+          </button>
+        </div>
+        {/* 折叠态显示条目计数，让人知道里面还在攒东西。 */}
+        <div className="lab-timeline__rail">
+          <span className="lab-rail-label">RTM 数据流 · <span data-testid="timeline-count">{entries.length}</span></span>
+        </div>
+        <span />
       </aside>
     );
   }
 
   return (
+    <>
+    {/* 窄屏下展开的数据流覆盖主区，点击遮罩收起；桌面端由 CSS 隐藏。 */}
+    <button type="button" className="lab-timeline__backdrop" aria-label="收起数据流" onClick={onToggleCollapsed} />
     <aside className="lab-timeline" aria-label="时间线">
       <div className="lab-timeline__header">
         <div className="lab-timeline__heading">
-          <span className="lab-timeline__heading-icon" aria-hidden="true">
-            <Activity size={17} />
-          </span>
-          <div>
-            <span className="lab-timeline__title">RTM 数据流</span>
-            <small>按发生顺序观察 API 调用与服务端事件</small>
-          </div>
-          <span className="lab-timeline__entry-count" aria-label={`${entries.length} 条记录`}>
-            {entries.length}
+          <span className="lab-timeline__title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M2 12h4l3-8 4 16 3-8h6" />
+            </svg>
+            RTM 数据流
           </span>
         </div>
 
         <div className="lab-timeline__actions">
           <button
             type="button"
-            className="lab-timeline__action"
+            className="ink-text-link"
             onClick={() => sources.forEach((source) => source.clear?.())}
             data-testid="timeline-clear"
           >
-            <Eraser size={13} aria-hidden="true" />
             清空
           </button>
           <button
             type="button"
-            className="lab-timeline__action"
+            className="ink-text-link"
             onClick={() => setShowLinkState((current) => !current)}
             aria-pressed={showLinkState}
           >
-            {showLinkState ? <Unplug size={13} aria-hidden="true" /> : <RadioTower size={13} aria-hidden="true" />}
             {showLinkState ? '隐藏连接' : '显示连接'}
           </button>
           <button
             type="button"
-            className="lab-timeline__action"
+            className="ink-icon-button"
             onClick={onToggleCollapsed}
             aria-expanded
+            aria-label="折叠数据流"
+            title="折叠数据流"
             data-testid="timeline-toggle"
           >
-            <ChevronsRight size={13} aria-hidden="true" />
-            折叠
+            <PanelIcon />
           </button>
         </div>
       </div>
 
-      {/* 单端房间只需按 API/事件类型筛选。 */}
-      <div className="lab-timeline__filters">
-        <FilterRow
-          label="类型筛选"
-          options={kinds}
-          picked={filter.kinds}
-          onToggle={toggleKind}
-          testId="filter-kind"
-        />
-      </div>
+      {/* 单端房间只需按 API/事件类型筛选；pill 自带色点与计数，兼作图例。 */}
+      <FilterRow
+        options={kinds}
+        counts={counts}
+        picked={filter.kinds}
+        onToggle={toggleKind}
+        testId="filter-kind"
+      />
 
       <div className="lab-timeline__body" ref={bodyRef} data-testid="timeline-body">
         {visible.length === 0 ? (
           <p className="lab-timeline__empty">
             {entries.length === 0
-              ? 'RTM 调用与事件将在这里按时间交错呈现。'
+              ? <>RTM 调用与事件将在这里<br />按时间倒序呈现，最新记录在顶部。</>
               : '当前筛选下暂无记录。'}
           </p>
         ) : (
@@ -286,5 +301,6 @@ export function TimelinePanel({
         )}
       </div>
     </aside>
+    </>
   );
 }

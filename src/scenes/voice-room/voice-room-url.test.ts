@@ -9,7 +9,16 @@ import {
   payloadDirectoryEntry,
   withVoiceRoomPageIdentity,
   type LegacyVoiceRoomUrlPayload,
+  type NamedVoiceRoomUrlPayload,
 } from "./voice-room-url";
+import { resolveRoomName } from "./room-name";
+
+function encodeRaw(value: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
+}
 
 function payload(overrides: Partial<LegacyVoiceRoomUrlPayload> = {}): LegacyVoiceRoomUrlPayload {
   return {
@@ -32,6 +41,34 @@ function payload(overrides: Partial<LegacyVoiceRoomUrlPayload> = {}): LegacyVoic
 }
 
 describe("语聊房 URL payload", () => {
+  it("V1/V2 的两角色保留中文、空格、Emoji 和旧英文昵称，UID 缺省不删除昵称", async () => {
+    const named: NamedVoiceRoomUrlPayload = { version: 2, nameKey: (await resolveRoomName('昵称往返')).nameKey,
+      roomId: 'nickname-room', role: 'audience', pageUid: null, nickname: null };
+    for (const base of [payload(), named]) {
+      for (const role of ['host', 'audience'] as const) {
+        for (const nickname of ['小明', 'Alice Smith', '👩‍💻小雨', '😀'.repeat(20), 'Alice_037', 'Host']) {
+          const original = { ...base, role, pageUid: role === 'host' ? 'host-identity' : null, nickname };
+          expect(parseVoiceRoomUrl(createVoiceRoomUrl('https://example.com', original))).toEqual(original);
+          expect(withVoiceRoomPageIdentity(original, 'preserved-uid', nickname)).toMatchObject({ pageUid: 'preserved-uid', nickname });
+        }
+      }
+    }
+  });
+
+  it("非法非空昵称使整个 V1/V2 payload 失效，不保留原房间和 UID", async () => {
+    const named: NamedVoiceRoomUrlPayload = { version: 2, nameKey: (await resolveRoomName('无效昵称')).nameKey,
+      roomId: 'private-room', role: 'audience', pageUid: 'original-uid', nickname: null };
+    for (const base of [payload({ pageUid: 'original-uid' }), named]) {
+      for (const nickname of ['', '   ', ' 未规范化 ', 'e\u0301', '😀'.repeat(21), '换\n行', 'tab\t字符', '\u200b', '\u202eabc', '\ud800']) {
+        const invalid = { ...base, nickname };
+        expect(decodeVoiceRoomUrlPayload(encodeRaw(invalid)), JSON.stringify(nickname)).toBeUndefined();
+        expect(parseVoiceRoomUrl(`?data=${encodeRaw(invalid)}`)).toBeUndefined();
+        expect(() => encodeVoiceRoomUrlPayload(invalid)).toThrow('非法的语聊房 URL payload');
+        expect(() => withVoiceRoomPageIdentity(base, 'new-uid', nickname)).toThrow('昵称格式不正确');
+      }
+    }
+  });
+
   it("用 UTF-8 Base64URL 往返保留中文，URL 只有 data 参数", () => {
     const encoded = encodeVoiceRoomUrlPayload(payload());
     const url = createVoiceRoomUrl("https://example.com/", payload());
@@ -61,13 +98,6 @@ describe("语聊房 URL payload", () => {
         "record-channel-list-20260817": Object.values(payload().localStorage)[0],
       },
     });
-
-    const encodeRaw = (value: unknown) => {
-      const bytes = new TextEncoder().encode(JSON.stringify(value));
-      let binary = "";
-      for (const byte of bytes) binary += String.fromCharCode(byte);
-      return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
-    };
 
     expect(decodeVoiceRoomUrlPayload(encodeRaw(extraTopLevel))).toBeUndefined();
     expect(decodeVoiceRoomUrlPayload(encodeRaw(twoEntries))).toBeUndefined();

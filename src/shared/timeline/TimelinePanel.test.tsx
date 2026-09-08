@@ -72,37 +72,38 @@ function rowTexts(): string[] {
 }
 
 describe('两类条目与图例', () => {
-  it('新条目用淡色背景提示，并在 5 秒后恢复普通背景', () => {
+  it('新条目以记录色柔和呼吸两个周期，之后静止', () => {
     expect(stylesSource).toMatch(
-      /\.lab-trace:not\(\[data-failed="true"\]\)\s*\{[^}]*animation:\s*lab-trace-arrival 5s ease-out forwards/,
+      /\.lab-trace \{[^}]*animation: lab-rowin 0\.35s ease-out, lab-rowbreathe 1\.8s ease-in-out 0\.3s 2/,
     );
-    expect(stylesSource).toContain('@keyframes lab-trace-arrival');
-    expect(stylesSource).toMatch(/100%\s*\{\s*background-color:\s*#fff/);
+    expect(stylesSource).toContain('@keyframes lab-rowbreathe');
   });
 
-  it('有新条目时自动滚到时间线底部', () => {
+  it('有新条目时自动滚到顶部，最新记录排在第一条', () => {
     const { host } = setup();
+    host.record({ name: 'rtm.login', at: BASE });
     const body = screen.getByTestId('timeline-body');
     Object.defineProperty(body, 'scrollHeight', { configurable: true, value: 480 });
-    host.record({ name: 'rtm.subscribe' });
-    expect(body.scrollTop).toBe(480);
+    body.scrollTop = 240;
+    host.record({ name: 'rtm.subscribe', at: BASE + 1 });
+    expect(body.scrollTop).toBe(0);
+    expect(rows()[0]).toHaveTextContent('rtm.subscribe');
   });
 
-  it('api 与 event 的色点带不同的 data-kind，靠视觉标记区分', () => {
+  it('api 与 event 在首行显示类型标签，行内不再占用色点列', () => {
     const { host } = setup();
     host.record({ name: 'rtm.login', kind: 'api' });
     host.record({ name: 'message', kind: 'event' });
 
     const kinds = rows().map((row) => row.getAttribute('data-kind'));
-    expect(kinds).toEqual(['api', 'event']);
-    // 每行都有一个自己的色点轨道，data-kind 与条目一致。
+    expect(kinds).toEqual(['event', 'api']);
     for (const row of rows()) {
-      const dot = row.querySelector('.lab-trace__dot');
-      expect(dot?.getAttribute('data-kind')).toBe(row.getAttribute('data-kind'));
+      expect(row.querySelector('.lab-trace__kind')?.textContent).toBe(row.getAttribute('data-kind')?.toUpperCase());
+      expect(row.querySelector('.lab-trace__dot')).toBeNull();
     }
   });
 
-  it('事件按“事件、type tag、事件名、详情”展示，摘要不重复 type', () => {
+  it('事件按“事件名、type tag、详情”展示，摘要不重复 type', () => {
     const { host } = setup();
     host.record({
       name: 'presence',
@@ -113,19 +114,23 @@ describe('两类条目与图例', () => {
 
     const row = rows()[0];
     expect(row.querySelector('[data-kind="event-type"]')?.textContent).toBe('REMOTE_STATE_CHANGED');
-    expect(row.querySelector('.lab-trace__tag[data-kind="event"]')?.textContent).toBe('事件');
+    // 类型标签与 SDK 事件子类型分开呈现。
+    expect(row.querySelector('.lab-trace__kind')?.textContent).toBe('EVENT');
+    expect(row.querySelector('.lab-trace__tag[data-kind="event"]')).toBeNull();
     expect(row.querySelector('.lab-trace__name')?.textContent).toBe('presence');
     expect(row.querySelector('.lab-trace__summary')?.textContent).toBe('Emma_301 muted=false');
   });
 
-  it('类型筛选复用条目色点，不再重复显示图例', () => {
+  it('类型筛选保留色点与计数，不再重复显示图例', () => {
     setup();
 
     expect(screen.queryByTestId('timeline-legend')).not.toBeInTheDocument();
     const legend = screen.getByTestId('filter-kind');
-    expect(legend.textContent).toContain('调用 RTM API');
-    expect(legend.textContent).toContain('收到 RTM 事件');
-    // 图例复用 `.lab-trace__dot`，图例与条目的视觉标记不可能对不上。
+    // 可见文案是等宽的 API / EVENT + 计数；可访问名保留完整说明。
+    expect(legend.textContent).toBe('API0EVENT0');
+    expect(within(legend).getByRole('button', { name: '调用 RTM API' })).toBeInTheDocument();
+    expect(within(legend).getByRole('button', { name: '收到 RTM 事件' })).toBeInTheDocument();
+    // 类型筛选仍有各自的色点，不受记录行移除色点列影响。
     const dots = legend.querySelectorAll('.lab-trace__dot');
     expect([...dots].map((dot) => dot.getAttribute('data-kind'))).toEqual(['api', 'event']);
   });
@@ -144,7 +149,9 @@ describe('两类条目与图例', () => {
 
     // 类型筛选器的选项就是全部出现过的 kind，恒定只有这两个。
     const options = within(screen.getByTestId('filter-kind')).getAllByRole('button');
-    expect(options.map((button) => button.textContent)).toEqual(['调用 RTM API', '收到 RTM 事件']);
+    expect(options.map((button) => button.getAttribute('aria-label'))).toEqual(['调用 RTM API', '收到 RTM 事件']);
+    // pill 上的计数跟随各类条目数。
+    expect(options.map((button) => button.textContent)).toEqual(['API1', 'EVENT1']);
   });
 
   it('默认展示 linkState 事件，可手动隐藏连接事件', async () => {
@@ -153,8 +160,8 @@ describe('两类条目与图例', () => {
     host.record({ name: 'storage', kind: 'event' });
 
     expect(rowTexts()).toEqual([
-      expect.stringContaining('linkState'),
       expect.stringContaining('storage'),
+      expect.stringContaining('linkState'),
     ]);
     await userEvent.setup().click(screen.getByRole('button', { name: '隐藏连接' }));
     expect(rowTexts()).toEqual([expect.stringContaining('storage')]);
@@ -172,14 +179,14 @@ describe('uid badge 配色', () => {
 
     const badges = screen.getAllByTestId('uid-badge');
     expect(badges.map((badge) => badge.textContent)).toEqual([
-      'host-aaa',
-      'host-aaa',
       'audience-bbb',
+      'host-aaa',
+      'host-aaa',
     ]);
 
     // 同角色两条的内联样式完全一致；跨角色必须不同。
-    expect(badges[0].getAttribute('style')).toBe(badges[1].getAttribute('style'));
-    expect(badges[0].getAttribute('style')).not.toBe(badges[2].getAttribute('style'));
+    expect(badges[1].getAttribute('style')).toBe(badges[2].getAttribute('style'));
+    expect(badges[1].getAttribute('style')).not.toBe(badges[0].getAttribute('style'));
   });
 
   it('颜色来自 roleColors 这一处来源，与主区身份条同源', () => {
@@ -188,9 +195,10 @@ describe('uid badge 配色', () => {
     audience.record({ name: 'rtm.login' });
 
     const badges = screen.getAllByTestId('uid-badge');
-    for (const [index, role] of ['host', 'audience'].entries()) {
+    for (const badge of badges) {
+      const role = badge.getAttribute('data-role')!;
       const { accent, soft } = roleColor(role);
-      const style = badges[index].getAttribute('style') ?? '';
+      const style = badge.getAttribute('style') ?? '';
       expect(style).toContain(accent);
       expect(style).toContain(soft);
     }
@@ -418,7 +426,7 @@ describe('清空与折叠', () => {
     const { onToggleCollapsed } = setup();
 
     const toggle = screen.getByTestId('timeline-toggle');
-    expect(toggle.textContent).toContain('折叠');
+    expect(toggle).toHaveAttribute('aria-label', '折叠数据流');
     await user.click(toggle);
 
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
@@ -476,29 +484,28 @@ describe('没有「已截断」提示', () => {
   });
 });
 
-describe('行布局照抄 spec 的三列网格', () => {
-  it('.lab-trace 为完整 HH:MM:SS.mmm 时间保留 82px 轨道', () => {
+describe('时间与正文两列，固定高度内保留完整详情', () => {
+  it('.lab-trace 为完整 HH:MM:SS.mmm 时间保留 86px 轨道', () => {
     const block = stylesSource.match(/\.lab-trace \{([^}]*)\}/)?.[1] ?? '';
 
     expect(block).toContain('display: grid');
-    expect(block.replace(/\s+/g, ' ')).toContain('grid-template-columns: 16px 82px minmax(0, 1fr)');
+    expect(block.replace(/\s+/g, ' ')).toContain('grid-template-columns: 86px minmax(0, 1fr)');
     const time = stylesSource.match(/\.lab-trace__time \{([^}]*)\}/)?.[1] ?? '';
     expect(time).toContain('white-space: nowrap');
   });
 
-  it('每行按序渲染色点轨道、时间、正文三格', () => {
+  it('每行按序渲染时间与正文，类型标签与名称在首行', () => {
     const { host } = setup();
     host.record({ name: 'rtm.login', summary: 'uid=host-aaa', durationMs: 12 });
 
     const children = [...rows()[0].children];
     expect(children.map((child) => child.className)).toEqual([
-      'lab-trace__dot',
       'lab-trace__time',
       'lab-trace__body',
     ]);
-    // 正文首行是 uid badge + 名称（+ 耗时），次行是摘要。
-    const body = children[2];
-    expect(body.querySelector('.lab-trace__head')?.textContent).toBe('APIhost-aaartm.login12ms');
+    // 正文首行是类型 + 名称 + uid badge（CSS 隐藏）+ 耗时，次行是摘要。
+    const body = children[1];
+    expect(body.querySelector('.lab-trace__head')?.textContent).toBe('APIrtm.loginhost-aaa12ms');
     expect(body.querySelector('.lab-trace__summary')?.textContent).toBe('uid=host-aaa');
   });
 
@@ -516,6 +523,45 @@ describe('行布局照抄 spec 的三列网格', () => {
     const error = screen.getByTestId('trace-error');
     expect(error.textContent).toContain('-14008');
     expect(error.textContent).toContain('LOCK_NOT_EXIST');
+    expect(rows()[0]).toHaveAttribute('data-failed', 'true');
+    expect(rows()[0]).toHaveAttribute('title', '-14008 LOCK_NOT_EXIST');
+    expect(error.parentElement).toHaveClass('lab-trace__summary');
+  });
+
+  it('长摘要保留原文，并通过整行悬浮提示提供全文', () => {
+    const { host } = setup();
+    const summary = '这是一条需要完整保留的长摘要。'.repeat(20);
+    host.record({ name: 'rtm.publish', summary });
+
+    expect(rows()[0]).toHaveAttribute('title', summary);
+    expect(rows()[0].querySelector('.lab-trace__summary-text')?.textContent).toBe(summary);
+  });
+
+  it('失败摘要与错误共享详情行，完整悬浮提示不会丢掉诊断信息', () => {
+    const { host } = setup();
+    const summary = '向房间发送消息。'.repeat(20);
+    const errorMessage = '请求失败：连接已中断，请检查网络后重试。'.repeat(10);
+    host.record({ name: 'rtm.publish', summary, errorCode: -10001, errorMessage });
+
+    const row = rows()[0];
+    expect(row).toHaveAttribute('title', `${summary}\n-10001 ${errorMessage}`);
+    const detail = row.querySelector('.lab-trace__summary');
+    const error = screen.getByTestId('trace-error');
+    expect(detail?.querySelector('.lab-trace__summary-text')?.textContent).toBe(summary);
+    expect(error.parentElement).toBe(detail);
+    expect(error.querySelector('code')?.textContent).toBe('-10001');
+    expect(error.querySelector('.lab-trace__error-message')?.textContent).toBe(errorMessage);
+  });
+
+  it.each([
+    { errorCode: 0, errorMessage: undefined, title: '0' },
+    { errorCode: undefined, errorMessage: 'REQUEST_FAILED', title: 'REQUEST_FAILED' },
+  ])('只有错误码或信息时仍保留详情与悬浮提示：$title', ({ errorCode, errorMessage, title }) => {
+    const { host } = setup();
+    host.record({ name: 'rtm.publish', errorCode, errorMessage });
+
+    expect(rows()[0]).toHaveAttribute('title', title);
+    expect(screen.getByTestId('trace-error').textContent).toBe(title);
     expect(rows()[0]).toHaveAttribute('data-failed', 'true');
   });
 });
@@ -573,7 +619,7 @@ describe('外部 store 订阅，不轮询', () => {
     expect(rows()).toHaveLength(0);
   });
 
-  it('多端条目单列交错按时间排，不按端分栏', () => {
+  it('多端乱序记录按时间从新到旧交错展示，不改来源快照', () => {
     const host = endpoint('host-aaa', 'host');
     const audience = endpoint('audience-bbb', 'audience');
     const sources = [host.source, audience.source];
@@ -586,13 +632,34 @@ describe('外部 store 订阅，不轮询', () => {
       host.store.record({ at: BASE + 10, kind: 'api', name: 'host-early' });
     });
 
-    // 只有一个列表容器（不是每端一列），且顺序按时间戳。
+    // 只有一个列表容器（不是每端一列），展示次序以时间为准，不以写入时刻为准。
     expect(screen.getAllByRole('list')).toHaveLength(1);
     expect(rowTexts().map((text) => text.replace(/^[\d:.]+/, '').trim())).toEqual([
-      'APIhost-aaahost-early',
-      '事件audience-bbbaudience-mid',
-      'APIhost-aaahost-late',
+      'APIhost-latehost-aaa',
+      'EVENTaudience-midaudience-bbb',
+      'APIhost-earlyhost-aaa',
     ]);
+    expect(host.store.getEntries().map((entry) => entry.name)).toEqual(['host-late', 'host-early']);
+    expect(audience.store.getEntries().map((entry) => entry.name)).toEqual(['audience-mid']);
+  });
+
+  it('同毫秒先展示后记录的条目，筛选与恢复仍保持倒序', async () => {
+    const { host } = setup();
+    host.record({ name: 'first-call', kind: 'api' });
+    host.record({ name: 'middle-event', kind: 'event' });
+    host.record({ name: 'last-call', kind: 'api' });
+    const names = () => rows().map((row) => row.querySelector('.lab-trace__name')?.textContent);
+    expect(names()).toEqual(['last-call', 'middle-event', 'first-call']);
+    const body = screen.getByTestId('timeline-body');
+    body.scrollTop = 100;
+
+    const filter = screen.getByRole('button', { name: '调用 RTM API' });
+    await userEvent.setup().click(filter);
+    expect(names()).toEqual(['last-call', 'first-call']);
+    expect(body.scrollTop).toBe(0);
+    await userEvent.setup().click(filter);
+    expect(names()).toEqual(['last-call', 'middle-event', 'first-call']);
+    expect(host.store.getEntries().map((entry) => entry.name)).toEqual(['first-call', 'middle-event', 'last-call']);
   });
 
   it('页面 login 与角色 trace 共享 uid/seq 时仍使用不同 React key', () => {

@@ -11,6 +11,7 @@ import { parseVoiceRoomUrl, VoiceRoomScene } from './VoiceRoomScene';
 import { encodeVoiceRoomUrlPayload, type LegacyVoiceRoomUrlPayload, type VoiceRoomUrlPayload, isNamedVoiceRoomPayload } from './voice-room-url';
 import source from './VoiceRoomScene.tsx?raw';
 import { directoryStorageKey } from './browser-room-directory';
+import { resolveRoomName } from './room-name';
 
 /** 房间目录只保留 7 天内的记录，夹具日期必须相对当前时间，写死会在一周后静默过期。 */
 const roomCreatedAt = Date.now() - 60 * 60 * 1000;
@@ -19,8 +20,9 @@ const env = { configured: true, appId: 'test-app-id', source: 'window.__ENV__' }
 
 function deferred() {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function payload(): LegacyVoiceRoomUrlPayload {
@@ -38,10 +40,13 @@ function payload(): LegacyVoiceRoomUrlPayload {
   };
 }
 
-function createSceneHarness(options: { holdLogin?: boolean; holdSubscribe?: boolean; holdUnsubscribe?: boolean; failEndWrite?: boolean; failDissolveBroadcast?: boolean; failCleanup?: boolean } = {}) {
+function createSceneHarness(options: { holdLogin?: boolean; holdDirectory?: boolean; holdSubscribe?: boolean; holdUnsubscribe?: boolean; failEndWrite?: boolean; failDissolveBroadcast?: boolean; failCleanup?: boolean; holdChatPublish?: boolean } = {}) {
   const operations: string[] = [];
+  const chatMessages: string[] = [];
   let failCleanup = options.failCleanup ?? false;
+  const chatPublish = deferred();
   const login = deferred();
+  const directorySubscribe = deferred();
   const subscribe = deferred();
   const unsubscribe = deferred();
   let handlers: AppRtmEventListeners = {};
@@ -62,6 +67,10 @@ function createSceneHarness(options: { holdLogin?: boolean; holdSubscribe?: bool
     async unsubscribe() { operations.push('rtm:unsubscribe'); if (options.holdUnsubscribe) await unsubscribe.promise; },
     async publish(_channelName, message, channelType) {
       operations.push(`rtm:publish:${channelType}:${JSON.parse(message).type}`);
+      if (JSON.parse(message).type === 'chat.message') {
+        chatMessages.push(JSON.parse(message).payload.value);
+        if (options.holdChatPublish) await chatPublish.promise;
+      }
       if (options.failDissolveBroadcast && JSON.parse(message).type === 'room.dissolved') throw new Error('广播失败');
     },
     async setPresenceState(_roomId, state) {
@@ -99,7 +108,10 @@ function createSceneHarness(options: { holdLogin?: boolean; holdSubscribe?: bool
       return () => { if (directoryListener === listener) directoryListener = undefined; };
     },
     getDirectoryPort: () => ({
-      async subscribe(name: string) { directoryListener?.(storageEvent(name, 'SNAPSHOT')); },
+      async subscribe(name: string) {
+        if (options.holdDirectory) await directorySubscribe.promise;
+        directoryListener?.(storageEvent(name, 'SNAPSHOT'));
+      },
       async unsubscribe() {},
       async write(name: string, value: string, revision: number) {
         if (options.failEndWrite && JSON.parse(value).status === 'inactive') throw new Error('写入失败');
@@ -128,9 +140,13 @@ function createSceneHarness(options: { holdLogin?: boolean; holdSubscribe?: bool
   };
   return {
     operations,
+    chatMessages,
     records,
     setFailCleanup: (value: boolean) => { failCleanup = value; },
+    resolveChatPublish: chatPublish.resolve,
+    rejectChatPublish: chatPublish.reject,
     resolveLogin: login.resolve,
+    resolveDirectory: directorySubscribe.resolve,
     resolveSubscribe: subscribe.resolve,
     resolveUnsubscribe: unsubscribe.resolve,
     emitPresence(event: Parameters<NonNullable<AppRtmEventListeners['presence']>>[0]) {
@@ -148,6 +164,320 @@ function createSceneHarness(options: { holdLogin?: boolean; holdSubscribe?: bool
     },
   };
 }
+
+async function seedNamedRoom(harness: ReturnType<typeof createSceneHarness>, roomName: string) {
+  const name = await resolveRoomName(roomName);
+  const roomId = 'nickname-room';
+  harness.records.set(name.nameKey, { majorRevision: 1, metadata: { entry: { value: JSON.stringify({
+    schemaVersion: 1, roomName: name.roomName, canonicalName: name.canonicalName,
+    roomId, hostUserId: 'host-1', status: 'active', attemptId: 'nickname-attempt',
+    createdAt: Date.now(), banUserIds: [],
+  }) } } });
+  harness.records.set(roomId, { majorRevision: 1, metadata: {
+    hostUserId: { value: 'host-1' }, announcement: { value: '' },
+    seats: { value: JSON.stringify({ 'seat-0': { seatId: 'seat-0', userId: 'host-1', displayName: 'Host' } }) },
+    forcedMutedUserIds: { value: '[]' },
+  } });
+}
+
+describe('入口选填昵称', () => {
+  it.each(['host', 'audience'] as const)('%s 粘贴换行时保留空草稿并阻止默认入房，后续编辑或合法粘贴清除错误', async (role) => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    fireEvent.change(screen.getByLabelText(role === 'host' ? '房间标题' : '加入的房间名称'), { target: { value: '粘贴昵称' } });
+    const input = screen.getByLabelText(role === 'host' ? '房主昵称' : '观众昵称');
+    const submit = screen.getByRole('button', { name: role === 'host' ? '创建并进入' : '加入房间' });
+    await user.click(input);
+    await user.paste('小\r\n明');
+    expect(input).toHaveValue('');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAccessibleDescription('昵称不能包含换行或不可见控制字符');
+    expect(submit).toBeDisabled();
+    await user.click(submit);
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 13 });
+    expect(harness.operations).toEqual(['rtm:login']);
+
+    await user.type(input, '修改后的名字');
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+    expect(submit).toBeEnabled();
+    await user.paste('\n');
+    expect(input).toHaveValue('修改后的名字');
+    expect(submit).toBeDisabled();
+    await user.paste('😀');
+    expect(input).toHaveValue('修改后的名字😀');
+    expect(input).toHaveAttribute('aria-invalid', 'false');
+    expect(submit).toBeEnabled();
+  });
+
+  it.each(['host', 'audience'] as const)('%s 合法粘贴尊重选区和20码点，保留中文、空格及未规范化的组合字符', async (role) => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    fireEvent.change(screen.getByLabelText(role === 'host' ? '房间标题' : '加入的房间名称'), { target: { value: '合法粘贴' } });
+    const input = screen.getByLabelText(role === 'host' ? '房主昵称' : '观众昵称') as HTMLInputElement;
+    const submit = screen.getByRole('button', { name: role === 'host' ? '创建并进入' : '加入房间' });
+    await user.type(input, '前替换后');
+    input.setSelectionRange(1, 3);
+    await user.paste(' 中文👩🏽‍💻e\u0301 ');
+    expect(input).toHaveValue('前 中文👩🏽‍💻e\u0301 后');
+    expect(submit).toBeEnabled();
+    input.setSelectionRange(0, input.value.length);
+    await user.paste('😀'.repeat(20));
+    expect(input).toHaveValue('😀'.repeat(20));
+    expect(submit).toBeEnabled();
+    await user.paste('多');
+    expect(input).toHaveValue('😀'.repeat(20));
+    expect(input).toHaveAccessibleDescription('昵称最多 20 个字符');
+    expect(submit).toBeDisabled();
+    input.setSelectionRange(0, input.value.length);
+    await user.paste('e');
+    await user.paste('\u0301');
+    expect(input).toHaveValue('e\u0301');
+    expect(submit).toBeEnabled();
+  });
+
+  it('两卡片独立校验，20 个 Emoji 可提交，超长或不可见字符只阻断对应卡片', async () => {
+    const harness = createSceneHarness();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    fireEvent.change(screen.getByLabelText('房间标题'), { target: { value: '创建房间' } });
+    fireEvent.change(screen.getByLabelText('加入的房间名称'), { target: { value: '加入房间' } });
+    const hostInput = screen.getByLabelText('房主昵称');
+    const audienceInput = screen.getByLabelText('观众昵称');
+    const create = screen.getByRole('button', { name: '创建并进入' });
+    const join = screen.getByRole('button', { name: '加入房间' });
+
+    expect(hostInput).toHaveValue('');
+    expect(audienceInput).toHaveValue('');
+    expect(create).toBeEnabled();
+    expect(join).toBeEnabled();
+    fireEvent.change(hostInput, { target: { value: '😀'.repeat(20) } });
+    expect(create).toBeEnabled();
+    fireEvent.change(audienceInput, { target: { value: '😀'.repeat(21) } });
+    expect(audienceInput).toHaveAttribute('aria-invalid', 'true');
+    expect(audienceInput).toHaveAccessibleDescription('昵称最多 20 个字符');
+    expect(join).toBeDisabled();
+    expect(create).toBeEnabled();
+    fireEvent.change(hostInput, { target: { value: '小\u200b明' } });
+    expect(hostInput).toHaveAccessibleDescription('昵称不能包含换行或不可见控制字符');
+    expect(create).toBeDisabled();
+    fireEvent.change(audienceInput, { target: { value: '   ' } });
+    expect(audienceInput).toHaveAttribute('aria-invalid', 'false');
+    expect(join).toBeEnabled();
+    expect(harness.operations).toEqual(['rtm:login']);
+  });
+
+  it.each(['host', 'audience'] as const)('空白昵称保持 %s 的既有默认值', async (role) => {
+    const harness = createSceneHarness();
+    if (role === 'audience') await seedNamedRoom(harness, '默认昵称');
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    fireEvent.change(screen.getByLabelText(role === 'host' ? '房间标题' : '加入的房间名称'), { target: { value: '默认昵称' } });
+    fireEvent.change(screen.getByLabelText(role === 'host' ? '房主昵称' : '观众昵称'), { target: { value: '   ' } });
+    await user.click(screen.getByRole('button', { name: role === 'host' ? '创建并进入' : '加入房间' }));
+    await screen.findByLabelText(role === 'host' ? '房主语聊房' : '听众语聊房');
+    await waitFor(() => {
+      const saved = parseVoiceRoomUrl(window.location.search);
+      expect(saved?.pageUid).toBe('audience-1');
+      expect(saved?.nickname).toEqual(role === 'host' ? 'Host' : expect.stringMatching(/^[A-Z][a-z]+_\d{3}$/u));
+    });
+  });
+
+  it.each(['host', 'audience'] as const)('%s 的自填昵称进入 Presence 和 URL，头像不截断组合 Emoji', async (role) => {
+    const harness = createSceneHarness();
+    if (role === 'audience') await seedNamedRoom(harness, '自填昵称');
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    fireEvent.change(screen.getByLabelText(role === 'host' ? '房间标题' : '加入的房间名称'), { target: { value: '自填昵称' } });
+    const input = screen.getByLabelText(role === 'host' ? '房主昵称' : '观众昵称');
+    fireEvent.change(input, { target: { value: ' 👩🏽‍💻Cafe\u0301 ' } });
+    await user.click(screen.getByRole('button', { name: role === 'host' ? '创建并进入' : '加入房间' }));
+    const room = await screen.findByLabelText(role === 'host' ? '房主语聊房' : '听众语聊房');
+    await waitFor(() => expect(harness.operations.some(operation => operation.startsWith('presence:set:👩🏽‍💻Café:'))).toBe(true));
+    const saved = parseVoiceRoomUrl(window.location.search)!;
+    expect(saved).toMatchObject({ role, pageUid: 'audience-1', nickname: '👩🏽‍💻Café' });
+    if (role === 'host' && isNamedVoiceRoomPayload(saved)) {
+      act(() => harness.emitPresence({
+        timestamp: 1, channelName: saved.roomId, channelType: 'MESSAGE', eventType: 'SNAPSHOT', publisher: '',
+        snapshot: [{ userId: 'audience-1', states: { displayName: '👩🏽‍💻Café' }, statesCount: 1 }], interval: null,
+      } as never));
+      expect(room.querySelector('.vr-single__seat-avatar')?.textContent).toBe('👩🏽‍💻');
+    }
+  });
+
+  it.each(['host', 'audience'] as const)('%s 的房间名和昵称输入在中文确认 Enter 时不提交，完成后可用 Enter 入房', async (role) => {
+    const harness = createSceneHarness();
+    if (role === 'audience') await seedNamedRoom(harness, '中文确认');
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    const roomInput = screen.getByLabelText(role === 'host' ? '房间标题' : '加入的房间名称');
+    const nicknameInput = screen.getByLabelText(role === 'host' ? '房主昵称' : '观众昵称');
+    fireEvent.change(roomInput, { target: { value: '中文确认' } });
+    fireEvent.change(nicknameInput, { target: { value: '小明' } });
+    for (const input of [roomInput, nicknameInput]) {
+      fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+      fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    }
+    expect(harness.operations).toEqual(['rtm:login']);
+    expect(screen.getByTestId('voice-room-entry')).toBeInTheDocument();
+    fireEvent.keyDown(nicknameInput, { key: 'Enter', keyCode: 13 });
+    await screen.findByLabelText(role === 'host' ? '房主语聊房' : '听众语聊房');
+    await waitFor(() => expect(parseVoiceRoomUrl(window.location.search)?.nickname).toBe('小明'));
+  });
+
+  it('查找和取消清理期间禁用两个昵称，取消完成后保留独立草稿', async () => {
+    const harness = createSceneHarness({ holdDirectory: true });
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    fireEvent.change(screen.getByLabelText('房间标题'), { target: { value: '取消昵称' } });
+    fireEvent.change(screen.getByLabelText('房主昵称'), { target: { value: '房主草稿' } });
+    fireEvent.change(screen.getByLabelText('观众昵称'), { target: { value: '观众草稿' } });
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    expect(screen.getByLabelText('房主昵称')).toBeDisabled();
+    expect(screen.getByLabelText('观众昵称')).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByLabelText('房主昵称')).toBeDisabled();
+    await act(async () => harness.resolveDirectory());
+    await waitFor(() => expect(screen.getByLabelText('房主昵称')).toBeEnabled());
+    expect(screen.getByLabelText('房主昵称')).toHaveValue('房主草稿');
+    expect(screen.getByLabelText('观众昵称')).toHaveValue('观众草稿');
+    expect(harness.operations).not.toContain('rtm:subscribe');
+  });
+
+  it('按名称加入失败后保留昵称草稿，修改后重试使用新的昵称', async () => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    fireEvent.change(screen.getByLabelText('加入的房间名称'), { target: { value: '重试昵称' } });
+    fireEvent.change(screen.getByLabelText('观众昵称'), { target: { value: '第一次草稿' } });
+    await user.click(screen.getByRole('button', { name: '加入房间' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('未找到该房间');
+    expect(screen.getByLabelText('观众昵称')).toHaveValue('第一次草稿');
+    await seedNamedRoom(harness, '重试昵称');
+    fireEvent.change(screen.getByLabelText('观众昵称'), { target: { value: '修改后的昵称' } });
+    await user.click(screen.getByRole('button', { name: '加入房间' }));
+    await screen.findByLabelText('听众语聊房');
+    await waitFor(() => expect(parseVoiceRoomUrl(window.location.search)?.nickname).toBe('修改后的昵称'));
+  });
+
+  it.each(['host', 'audience'] as const)('%s 从有效 URL 恢复昵称，返回入口后只填充该角色草稿', async (role) => {
+    const harness = createSceneHarness();
+    const user = userEvent.setup();
+    const restored = { ...payload(), role, pageUid: 'audience-1', nickname: '恢复昵称😀' };
+    if (role === 'host') Object.values(restored.localStorage)[0].hostUserId = 'audience-1';
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search={`?data=${encodeVoiceRoomUrlPayload(restored)}`} />);
+    const room = await screen.findByLabelText(role === 'host' ? '房主语聊房' : '听众语聊房');
+    await waitFor(() => expect(harness.operations.some(operation => operation.startsWith('presence:set:恢复昵称😀:'))).toBe(true));
+    await user.click(within(room).getByRole('button', { name: role === 'host' ? '暂时离开' : '退出房间' }));
+    await screen.findByTestId('voice-room-entry');
+    expect(screen.getByLabelText(role === 'host' ? '房主昵称' : '观众昵称')).toHaveValue('恢复昵称😀');
+    expect(screen.getByLabelText(role === 'host' ? '观众昵称' : '房主昵称')).toHaveValue('');
+    expect(harness.operations).not.toContain('rtm:logout');
+  });
+
+  it('非法昵称 URL 回到普通入口，不采用原身份或自动加入原房间', async () => {
+    const harness = createSceneHarness();
+    const pageUids: string[] = [];
+    const invalid = { ...payload(), pageUid: 'invalid-url-identity', nickname: '非法\n昵称' };
+    const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(invalid))))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+    render(<VoiceRoomScene env={env} overrides={{ ...harness.overrides, createAppRtmSession: (_appId, userId) => {
+      pageUids.push(userId);
+      return harness.overrides.createAppRtmSession();
+    } }} search={`?data=${encoded}`} />);
+    await screen.findByTestId('voice-room-entry');
+    expect(pageUids).toHaveLength(1);
+    expect(pageUids[0]).not.toBe('invalid-url-identity');
+    expect(harness.operations).toEqual(['rtm:login']);
+    expect(screen.getByLabelText('观众昵称')).toHaveValue('');
+  });
+});
+
+describe('聊天草稿与异步发送', () => {
+  async function enterRoom() {
+    const harness = createSceneHarness({ holdChatPublish: true });
+    const user = userEvent.setup();
+    render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
+    await screen.findByTestId('voice-room-entry');
+    await user.type(screen.getByLabelText('房间标题'), '草稿测试');
+    await user.click(screen.getByRole('button', { name: '创建并进入' }));
+    const room = await screen.findByLabelText('房主语聊房');
+    const input = within(room).getByLabelText('聊天内容');
+    const send = within(room).getByRole('button', { name: '发送聊天' });
+    return { harness, user, room, input, send };
+  }
+
+  it('发送成功前保留原草稿，成功后清空未经编辑的草稿', async () => {
+    const { harness, user, input, send } = await enterRoom();
+    await user.type(input, '第一条消息');
+    await user.click(send);
+    expect(harness.chatMessages).toEqual(['第一条消息']);
+    expect(input).toHaveValue('第一条消息');
+
+    await act(async () => harness.resolveChatPublish());
+    expect(input).toHaveValue('');
+    expect(send).toBeDisabled();
+  });
+
+  it('发送期间键盘输入的新草稿不会被上一条消息的成功回调清空', async () => {
+    const { harness, user, input, send } = await enterRoom();
+    await user.type(input, '第一条消息');
+    await user.click(send);
+    await user.clear(input);
+    await user.type(input, '第二条尚未发送的草稿');
+
+    await act(async () => harness.resolveChatPublish());
+    expect(input).toHaveValue('第二条尚未发送的草稿');
+    expect(harness.chatMessages).toEqual(['第一条消息']);
+  });
+
+  it('发送期间删除后重新输入相同文本也保留为新草稿', async () => {
+    const { harness, user, input, send } = await enterRoom();
+    await user.type(input, '再发一次');
+    await user.click(send);
+    await user.clear(input);
+    await user.type(input, '再发一次');
+
+    await act(async () => harness.resolveChatPublish());
+    expect(input).toHaveValue('再发一次');
+    expect(harness.chatMessages).toEqual(['再发一次']);
+  });
+
+  it('发送期间通过选择器插入 Emoji 后保留草稿且不会额外发送', async () => {
+    const { harness, user, room, input, send } = await enterRoom();
+    await user.type(input, '你好');
+    await user.click(send);
+    await user.click(within(room).getByRole('button', { name: '打开 Emoji 选择器' }));
+    await user.click(within(room).getByRole('button', { name: '插入 😀' }));
+
+    await act(async () => harness.resolveChatPublish());
+    expect(input).toHaveValue('你好😀');
+    expect(harness.chatMessages).toEqual(['你好']);
+  });
+
+  it.each([false, true])('发送失败保留当前草稿并显示错误（等待期间编辑：%s）', async (editWhilePending) => {
+    const { harness, user, input, send } = await enterRoom();
+    await user.type(input, '未发送成功的消息');
+    await user.click(send);
+    if (editWhilePending) {
+      await user.clear(input);
+      await user.type(input, '新草稿');
+    }
+
+    await act(async () => harness.rejectChatPublish(new Error('聊天发送失败')));
+    expect(input).toHaveValue(editWhilePending ? '新草稿' : '未发送成功的消息');
+    expect(await screen.findByRole('alert')).toHaveTextContent('聊天发送失败');
+    expect(harness.chatMessages).toEqual(['未发送成功的消息']);
+    expect(send).toBeEnabled();
+  });
+});
 
 describe('语聊房单端入口', () => {
   it('从唯一 data 参数解码完整 payload', () => {
@@ -400,6 +730,7 @@ describe('语聊房单端入口', () => {
     />);
     await screen.findByTestId('voice-room-entry');
     await user.type(screen.getByLabelText('房间标题'), '保留数据流房间');
+    await user.type(screen.getByLabelText('房主昵称'), '暂离保留昵称');
     await user.click(screen.getByRole('button', { name: '创建并进入' }));
     const room = await screen.findByLabelText('房主语聊房');
     await vi.waitFor(() => expect(publishedSources.at(-1)).toHaveLength(3));
@@ -409,6 +740,7 @@ describe('语聊房单端入口', () => {
     await vi.waitFor(() => expect(screen.getByTestId('voice-room-entry')).toBeInTheDocument());
     expect(publishedSources.at(-1)).toHaveLength(3);
     expect(publishedSources).not.toContainEqual([]);
+    expect(screen.getByLabelText('房主昵称')).toHaveValue('暂离保留昵称');
   });
 
   it('Audience 不渲染右侧席位 panel，上麦操作位于消息栏最右侧并展示麦克风异常', async () => {
@@ -456,16 +788,16 @@ describe('语聊房单端入口', () => {
       publisher: 'audience-1',
       stateChanged: { microphoneError: 'true' },
     } as never));
-    expect(within(room).getByText('麦克风异常')).toBeInTheDocument();
+    expect(within(room).getByText('MIC ERROR')).toBeInTheDocument();
     expect(within(room).getByTitle('麦克风设备异常')).toBeInTheDocument();
 
     await userEvent.setup().click(within(composer).getByRole('button', { name: '闭麦' }));
     expect(harness.operations).toContain('presence:set::true');
     expect(harness.operations).toContain('rtc:mute:true');
-    expect(composer.lastElementChild).toHaveTextContent('主动下麦');
+    expect(composer.lastElementChild).toHaveTextContent('下麦');
   });
 
-  it('收到上麦邀请时公屏回到顶部，后续新消息到达时再滚到底部', async () => {
+  it('收到上麦邀请时右侧面板出现邀请卡，新消息到达时公屏滚到底部', async () => {
     const harness = createSceneHarness();
     render(<VoiceRoomScene
       env={env}
@@ -496,8 +828,14 @@ describe('语聊房单端入口', () => {
       }),
     } as never));
 
-    expect(await within(room).findByText('房主邀请你上 2 号麦')).toBeInTheDocument();
-    expect(feed.scrollTop).toBe(0);
+    const invitation = await within(room).findByRole('status');
+    expect(invitation).toHaveTextContent('房主邀请你上麦');
+    expect(invitation).toHaveTextContent('SEAT 02');
+    expect(within(invitation).getByRole('button', { name: '接受' })).toBeInTheDocument();
+    expect(within(invitation).getByRole('button', { name: '拒绝' })).toBeInTheDocument();
+    // 邀请卡不在公屏里，公屏位置不受影响。
+    expect(feed.scrollTop).toBe(320);
+    expect(within(feed).queryByText(/房主邀请你/)).not.toBeInTheDocument();
 
     act(() => harness.emitMessage({
       timestamp: now + 1,
@@ -520,7 +858,7 @@ describe('语聊房单端入口', () => {
     expect(feed.scrollTop).toBe(600);
   });
 
-  it('Host 用 Presence nickname 展示和选择听众，不暴露 UID', async () => {
+  it('Host 用 Presence nickname 展示听众并按行邀请上麦，不暴露 UID', async () => {
     const harness = createSceneHarness();
     const user = userEvent.setup();
     render(<VoiceRoomScene env={env} overrides={harness.overrides} search="" />);
@@ -559,20 +897,22 @@ describe('语聊房单端入口', () => {
           seats: { value: JSON.stringify({
             'seat-0': { seatId: 'seat-0', userId: 'audience-1', displayName: 'StorageHost' },
             'seat-1': { seatId: 'seat-1', userId: 'audience-2', displayName: 'Storage_999' },
+            'seat-2': { seatId: 'seat-2', userId: null, displayName: null },
           }) },
           forcedMutedUserIds: { value: '[]' },
         },
       },
     } as never));
 
-    await user.click(screen.getByRole('combobox', { name: '选择邀请听众' }));
+    const members = screen.getByRole('region', { name: '房间成员管理' });
+    // 麦位与在线听众都用 Presence nickname，不用 Storage displayName。
     expect(screen.getAllByText('Alice_037').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole('option', { name: 'Alice_037' })).toBeInTheDocument();
     expect(screen.queryByText('Storage_999')).not.toBeInTheDocument();
-    await user.type(screen.getByRole('combobox', { name: '选择邀请听众' }), 'Alice');
-    expect(screen.getByRole('option', { name: 'Alice_037' })).toBeInTheDocument();
     expect(screen.queryByText('audience-2')).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/UID/i)).not.toBeInTheDocument();
+    expect(within(members).getByRole('button', { name: '封禁Alice_037' })).toBeInTheDocument();
+    await user.click(within(members).getByRole('button', { name: '邀请Alice_037上麦' }));
+    await waitFor(() => expect(harness.operations).toContain('rtm:publish:USER:seat.invited'));
   });
 
   it('直达 Audience URL 在平台登录完成前不闪现 choose', () => {
@@ -628,7 +968,7 @@ describe('语聊房单端入口', () => {
       interval: null,
     } as never));
 
-    expect(within(room).getByText('暂时离开…')).toBeInTheDocument();
+    expect(within(room).getByText('AWAY')).toBeInTheDocument();
     expect(within(room).getByTitle('房主暂时离开')).toBeInTheDocument();
     expect(within(room).getByRole('button', { name: '申请上麦' })).toBeDisabled();
     expect(within(room).getByTitle('房主暂时离开，无法处理上麦申请')).toBeInTheDocument();

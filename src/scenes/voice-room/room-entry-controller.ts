@@ -8,7 +8,7 @@ import {
   type BrowserRoomDirectoryEntry,
   directoryStorageKey,
 } from "./browser-room-directory";
-import { createAudienceDisplayName } from "./audience-display-name";
+import { resolveEntryNickname } from "./nickname";
 import {
   SingleRoomClient,
   type SingleRoomClientOptions,
@@ -68,6 +68,7 @@ export class RoomEntryController {
   private busy = false;
   private ownEnding = false;
   private pendingOperation?: Promise<void>;
+  private leavePromise?: Promise<void>;
 
   constructor(private readonly options: RoomEntryControllerOptions) {
     this.createClient = options.createClient ?? ((clientOptions) => new SingleRoomClient(clientOptions));
@@ -81,26 +82,28 @@ export class RoomEntryController {
     return () => this.listeners.delete(listener);
   }
 
-  createHostRoom(input: { roomName: string }): Promise<void> {
+  createHostRoom(input: { roomName: string; nickname?: string }): Promise<void> {
     return this.runNamed(async generation => {
+      const nickname = resolveEntryNickname(input.nickname, 'host', this.options.session.userId);
       const name = await resolveRoomName(input.roomName);
       this.checkGeneration(generation);
       const directory = await this.openDirectory('host', name.nameKey, generation);
-      await this.createNamedHost(name, directory, generation);
+      await this.createNamedHost(name, directory, generation, nickname);
     });
   }
 
-  joinAudienceByName(roomName: string): Promise<void> {
+  joinAudienceByName(roomName: string, inputNickname?: string): Promise<void> {
     return this.runNamed(async generation => {
+      const nickname = resolveEntryNickname(inputNickname, 'audience', this.options.session.userId);
       const name = await resolveRoomName(roomName);
       this.checkGeneration(generation);
       const directory = await this.openDirectory('audience', name.nameKey, generation);
-      await this.admitNamed('audience', directory, generation);
+      await this.admitNamed('audience', directory, generation, nickname);
     });
   }
 
   private runNamed(action: (generation: number) => Promise<void>): Promise<void> {
-    if (this.busy || this.currentClient) return Promise.reject(new Error('已有房间操作进行中，请先完成或取消'));
+    if (this.busy || this.currentClient || this.leavePromise) return Promise.reject(new Error('已有房间操作进行中，请先完成或取消'));
     this.busy = true;
     const generation = ++this.generation;
     this.setView({ phase: 'admitting', statusText: '正在查找房间…' });
@@ -138,13 +141,13 @@ export class RoomEntryController {
     return directory;
   }
 
-  private async createNamedHost(name: RoomName, directory: NameDirectory, generation: number): Promise<void> {
+  private async createNamedHost(name: RoomName, directory: NameDirectory, generation: number, nickname: string): Promise<void> {
     let snapshot = directory.current!;
     let existing = snapshot.entry;
     let candidate = this.readAttempt(name.nameKey);
     if (existing?.status === 'active') {
       if (candidate?.roomId === existing.roomId && candidate.attemptId === existing.attemptId && existing.hostUserId === this.options.session.userId) {
-        await this.admitNamed('host', directory, generation, this.namedPayload('host', name.nameKey, existing.roomId));
+        await this.admitNamed('host', directory, generation, nickname, this.namedPayload('host', name.nameKey, existing.roomId, nickname));
         return;
       }
       throw new Error('该名称已被使用，可在右侧输入名称以听众身份加入');
@@ -179,7 +182,7 @@ export class RoomEntryController {
     }
     const attempt = candidate;
     this.saveAttempt(name.nameKey, attempt);
-    this.options.replaceUrl?.(this.namedPayload('host', name.nameKey, attempt.roomId));
+    this.options.replaceUrl?.(this.namedPayload('host', name.nameKey, attempt.roomId, nickname));
     const host = directory.transport as HostNameDirectoryRtm;
     if (!existing || existing.attemptId !== attempt.attemptId || existing.status !== 'creating') {
       this.setView({ phase: 'admitting', statusText: '正在登记房间名称…' });
@@ -187,8 +190,8 @@ export class RoomEntryController {
       this.checkGeneration(generation);
     }
     const entry = this.namedEntry(name.nameKey, attempt);
-    const payload = this.namedPayload('host', name.nameKey, attempt.roomId);
-    const client = this.makeClient('host', entry);
+    const payload = this.namedPayload('host', name.nameKey, attempt.roomId, nickname);
+    const client = this.makeClient('host', entry, nickname);
     this.currentClient = client;
     this.watchNamed(directory, entry, client, true);
     this.setView({ phase: 'subscribing', client, entry, payload, statusText: '正在准备房间…' });
@@ -208,21 +211,23 @@ export class RoomEntryController {
 
   private async joinNamedPayload(payload: NamedVoiceRoomUrlPayload): Promise<void> {
     return this.runNamed(async generation => {
+      const nickname = resolveEntryNickname(payload.nickname, payload.role, this.options.session.userId);
+      const source = { ...payload, nickname };
       const directory = await this.openDirectory(payload.role, payload.nameKey, generation);
       const record = directory.current?.entry;
       if (payload.role === 'host' && (!record || record.status === 'creating')) {
         const attempt = this.readAttempt(payload.nameKey) ?? (record?.roomId === payload.roomId && record.hostUserId === this.options.session.userId ? record : undefined);
         if (attempt) this.saveAttempt(payload.nameKey, attempt);
         if (attempt?.roomId === payload.roomId && (!record || record.roomId === payload.roomId)) {
-          await this.createNamedHost(await resolveRoomName(attempt.roomName), directory, generation);
+          await this.createNamedHost(await resolveRoomName(attempt.roomName), directory, generation, nickname);
           return;
         }
       }
-      await this.admitNamed(payload.role, directory, generation, payload);
+      await this.admitNamed(payload.role, directory, generation, nickname, source);
     });
   }
 
-  private async admitNamed(role: 'host' | 'audience', directory: NameDirectory, generation: number, source?: NamedVoiceRoomUrlPayload): Promise<void> {
+  private async admitNamed(role: 'host' | 'audience', directory: NameDirectory, generation: number, nickname: string, source?: NamedVoiceRoomUrlPayload): Promise<void> {
     const snapshot = await directory.waitFor(value => value);
     const record = snapshot.entry;
     this.checkGeneration(generation);
@@ -233,8 +238,7 @@ export class RoomEntryController {
     if (record.banUserIds.includes(this.options.session.userId)) throw new Error('你已被该房间封禁');
     if (role === 'host' && record.hostUserId !== this.options.session.userId) throw new Error('房主身份与房间登记不匹配');
     const entry = this.namedEntry(directory.transport.nameKey, record);
-    const payload = source ?? this.namedPayload(role, directory.transport.nameKey, record.roomId);
-    const nickname = payload.nickname ?? createAudienceDisplayName(this.options.session.userId);
+    const payload = source ?? this.namedPayload(role, directory.transport.nameKey, record.roomId, nickname);
     const client = this.makeClient(role, entry, nickname);
     this.currentClient = client;
     this.watchNamed(directory, entry, client, false);
@@ -289,8 +293,8 @@ export class RoomEntryController {
     return entry;
   }
 
-  private namedPayload(role: 'host' | 'audience', nameKey: string, roomId: string): NamedVoiceRoomUrlPayload {
-    return { version: 2, nameKey, roomId, role, pageUid: role === 'host' ? this.options.session.userId : null, nickname: null };
+  private namedPayload(role: 'host' | 'audience', nameKey: string, roomId: string, nickname: string): NamedVoiceRoomUrlPayload {
+    return { version: 2, nameKey, roomId, role, pageUid: role === 'host' ? this.options.session.userId : null, nickname };
   }
 
   private readAttempt(nameKey: string): NameDirectoryEntry | undefined {
@@ -308,21 +312,24 @@ export class RoomEntryController {
   }
 
   async joinAudienceFromUrlPayload(payload: VoiceRoomUrlPayload): Promise<void> {
+    if (this.leavePromise) throw new Error('已有房间操作进行中，请先完成或取消');
     if (payload.role !== "audience") throw new Error("邀请 URL 不是 Audience 入口");
     if (isNamedVoiceRoomPayload(payload)) return this.joinNamedPayload(payload);
+    const nickname = resolveEntryNickname(payload.nickname, 'audience', this.options.session.userId);
     const { storageKey, entry } = payloadDirectoryEntry(payload);
     this.options.directory.merge(storageKey, entry);
-    await this.joinAudienceFromDirectory(entry.roomId, payload);
+    await this.joinAudienceFromDirectory(entry.roomId, { ...payload, nickname });
   }
 
   async joinAudienceFromDirectory(roomId: string, sourcePayload?: VoiceRoomUrlPayload): Promise<void> {
     const entry = this.requireEntry(roomId);
-    if (entry.nameKey) return this.joinNamedPayload(this.namedPayload('audience', entry.nameKey, entry.roomId));
-    if (this.busy || this.currentClient) throw new Error('已有房间操作进行中，请先完成或取消');
+    if (entry.nameKey) return this.joinNamedPayload(this.namedPayload('audience', entry.nameKey, entry.roomId,
+      resolveEntryNickname(sourcePayload?.nickname, 'audience', this.options.session.userId)));
+    if (this.busy || this.currentClient || this.leavePromise) throw new Error('已有房间操作进行中，请先完成或取消');
     const generation = ++this.generation;
     this.assertActive(entry);
     this.assertNotBanned(entry);
-    const nickname = sourcePayload?.nickname ?? createAudienceDisplayName(this.options.session.userId);
+    const nickname = resolveEntryNickname(sourcePayload?.nickname, 'audience', this.options.session.userId);
     const payload: VoiceRoomUrlPayload = sourcePayload
       ? { ...sourcePayload, nickname }
       : {
@@ -337,18 +344,21 @@ export class RoomEntryController {
   }
 
   async restoreHostFromUrlPayload(payload: VoiceRoomUrlPayload): Promise<void> {
+    if (this.leavePromise) throw new Error('已有房间操作进行中，请先完成或取消');
     if (payload.role !== "host" || payload.pageUid !== this.options.session.userId) {
       throw new Error("Host 刷新 URL 与当前页面身份不匹配");
     }
     if (isNamedVoiceRoomPayload(payload)) return this.joinNamedPayload(payload);
+    const nickname = resolveEntryNickname(payload.nickname, 'host', this.options.session.userId);
     const { storageKey, entry } = payloadDirectoryEntry(payload);
     this.options.directory.merge(storageKey, entry);
     const stored = this.requireEntry(entry.roomId);
     this.assertActive(stored);
-    await this.enter("host", stored, payload);
+    await this.enter("host", stored, { ...payload, nickname });
   }
 
-  async leaveRoom(): Promise<void> {
+  leaveRoom(): Promise<void> {
+    if (this.leavePromise) return this.leavePromise;
     this.generation += 1;
     const client = this.currentClient;
     this.currentClient = undefined;
@@ -356,9 +366,13 @@ export class RoomEntryController {
     this.unwatchDirectory = undefined;
     const directory = this.currentDirectory;
     this.currentDirectory = undefined;
-    await Promise.allSettled([client?.leaveRoom(), directory?.close()]);
-    await this.pendingOperation?.catch(() => {});
-    this.setView({ phase: "idle" });
+    const pendingOperation = this.pendingOperation;
+    this.leavePromise = Promise.resolve().then(async () => {
+      await Promise.allSettled([client?.leaveRoom(), directory?.close()]);
+      await pendingOperation?.catch(() => {});
+      this.setView({ phase: "idle" });
+    }).finally(() => { this.leavePromise = undefined; });
+    return this.leavePromise;
   }
 
   private async enter(
@@ -367,7 +381,7 @@ export class RoomEntryController {
     payload: VoiceRoomUrlPayload,
   ): Promise<void> {
     const generation = ++this.generation;
-    const client = this.makeClient(role, entry);
+    const client = this.makeClient(role, entry, resolveEntryNickname(payload.nickname, role, this.options.session.userId));
     this.currentClient = client;
     await this.subscribePreparedClient(generation, client, entry, payload);
   }
@@ -390,7 +404,7 @@ export class RoomEntryController {
         ? withVoiceRoomPageIdentity(
           payload,
           this.options.session.userId,
-          payload.nickname ?? createAudienceDisplayName(this.options.session.userId),
+          resolveEntryNickname(payload.nickname, 'audience', this.options.session.userId),
         )
         : payload;
       this.options.replaceUrl?.(updatedPayload);
@@ -409,7 +423,7 @@ export class RoomEntryController {
   private makeClient(
     role: "host" | "audience",
     entry: BrowserRoomDirectoryEntry,
-    audienceDisplayName?: string,
+    displayName: string,
   ): SingleRoomClient {
     const sharedDirectory = entry.nameKey ? this.currentDirectory : undefined;
     const banLocally = (userId: string) => {
@@ -436,9 +450,7 @@ export class RoomEntryController {
       roomName: entry.roomName,
       hostUserId: entry.hostUserId!,
       userId: this.options.session.userId,
-      displayName: role === "host"
-        ? "Host"
-        : audienceDisplayName ?? createAudienceDisplayName(this.options.session.userId),
+      displayName,
       role,
       session: this.options.session,
       createRtc: this.options.createRtc,

@@ -3,7 +3,7 @@ import {
   isDirectoryStorageKey,
   type BrowserRoomDirectoryEntry,
 } from "./browser-room-directory";
-import { isAudienceDisplayName } from "./audience-display-name";
+import { isValidNickname } from "./nickname";
 
 export interface LegacyVoiceRoomUrlPayload {
   localStorage: Record<string, BrowserRoomDirectoryEntry>;
@@ -114,7 +114,7 @@ export function parseVoiceRoomUrlPayloadValue(value: unknown): VoiceRoomUrlPaylo
         (value.role !== 'host' && value.role !== 'audience') ||
         (value.pageUid !== null && !isNonEmptyString(value.pageUid)) ||
         (value.role === 'host' && value.pageUid === null) ||
-        (value.nickname !== null && !isAudienceDisplayName(value.nickname))) return undefined;
+        (value.nickname !== null && !isValidNickname(value.nickname))) return undefined;
     return value as unknown as NamedVoiceRoomUrlPayload;
   }
   if (!isRecord(value) ||
@@ -122,7 +122,7 @@ export function parseVoiceRoomUrlPayloadValue(value: unknown): VoiceRoomUrlPaylo
   if (value.role !== "host" && value.role !== "audience") return undefined;
   if (value.pageUid !== null && !isNonEmptyString(value.pageUid)) return undefined;
   const nickname = "nickname" in value ? value.nickname : null;
-  if (nickname !== null && !isAudienceDisplayName(nickname)) return undefined;
+  if (nickname !== null && !isValidNickname(nickname)) return undefined;
   if (!isRecord(value.localStorage)) return undefined;
   const entries = Object.entries(value.localStorage);
   if (entries.length !== 1 || !isDirectoryStorageKey(entries[0][0])) return undefined;
@@ -178,6 +178,6 @@ export function withVoiceRoomPageIdentity(
   nickname: string,
 ): VoiceRoomUrlPayload {
   if (!isNonEmptyString(pageUid)) throw new Error("页面 UID 不能为空");
-  if (!isAudienceDisplayName(nickname)) throw new Error("Audience 昵称格式不正确");
+  if (!isValidNickname(nickname)) throw new Error("昵称格式不正确");
   return { ...payload, pageUid, nickname };
 }
